@@ -7,8 +7,8 @@ const STARTER = [
 ];
 const $ = s => document.querySelector(s);
 const store = {
-  read(){ try{return JSON.parse(localStorage.getItem('context-war-state'))||{memories:STARTER,moves:5}}catch{return{memories:STARTER,moves:5}} },
-  write(v){ localStorage.setItem('context-war-state',JSON.stringify(v)); }
+  read(){ try{return JSON.parse(localStorage.getItem('doxomachy-state'))||{memories:STARTER,moves:5}}catch{return{memories:STARTER,moves:5}} },
+  write(v){ localStorage.setItem('doxomachy-state',JSON.stringify(v)); }
 };
 let state=store.read();
 const approxTokens=t=>Math.max(1,Math.ceil(t.trim().length/4));
@@ -47,5 +47,5 @@ $('#openComposer').addEventListener('click',()=>{$('#composer').hidden=false;$('
 $('#closeComposer').addEventListener('click',()=>{$('#composer').hidden=true});
 $('#beliefText').addEventListener('input',e=>{const n=e.target.value.length;$('#charCount').textContent=`${n} / 120`;const t=approxTokens(e.target.value),w=weakest();$('#evictionPreview').textContent=used()+t>LIMIT&&w?`Adding this will displace: “${w.text}”`:''});
 $('#beliefForm').addEventListener('submit',e=>{e.preventDefault();if(state.moves<=0)return toast('No free moves remain on this device.');const text=$('#beliefText').value.trim();if(text.length<8)return toast('Write at least eight characters.');if(/https?:\/\/|www\./i.test(text))return toast('Links are not allowed in beliefs.');const m={id:`m${Date.now()}`,text,author:$('#alias').value.trim()||'anonymous',shields:1,created:Date.now()};const evicted=enforceLimit(m);state.memories.push(m);state.moves--;e.target.reset();$('#charCount').textContent='0 / 120';$('#evictionPreview').textContent='';$('#composer').hidden=true;render(m.id);toast(evicted.length?`Added. ${evicted.length} weak belief disappeared.`:'Belief added to the public mind.')});
-$('#shareDiary').addEventListener('click',async()=>{const text=`Context War diary\n\n${$('#diaryText').textContent}\n\nhttps://flcrom.github.io/context-war/`;try{await navigator.clipboard.writeText(text);toast('Diary copied.')}catch{toast('Copy failed. Select the diary text instead.')}});
+$('#shareDiary').addEventListener('click',async()=>{const text=`Doxomachy diary\n\n${$('#diaryText').textContent}\n\nhttps://flcrom.github.io/doxomachy/`;try{await navigator.clipboard.writeText(text);toast('Diary copied.')}catch{toast('Copy failed. Select the diary text instead.')}});
 render();

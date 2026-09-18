@@ -13,7 +13,7 @@ export default {
   const url=new URL(request.url);
   if(url.pathname==='/health')return json({ok:true,service:'doxomachy-api'},200,env.WEB_ORIGIN);
   if(url.pathname==='/v1/mind'&&request.method==='GET')return mindStub(env).fetch(request);
-  if((url.pathname==='/v1/beliefs'||url.pathname.match(/^\/v1\/beliefs\/[^/]+\/protect$/))&&request.method==='POST')return mindStub(env).fetch(request);
+  if((url.pathname==='/v1/beliefs'||url.pathname==='/v1/diary'||url.pathname.match(/^\/v1\/beliefs\/[^/]+\/protect$/))&&request.method==='POST')return mindStub(env).fetch(request);
   return json({error:'not_found'},404,env.WEB_ORIGIN);
  },
  async scheduled(_controller:ScheduledController,env:Env){await mindStub(env).fetch('https://mind.internal/v1/diary',{method:'POST'})}
@@ -51,4 +51,4 @@ export class Mind {
   }
   return json({error:'not_found'},404);
  }
-                                                                                                                                                                                                  }
+}

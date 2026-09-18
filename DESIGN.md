@@ -1,7 +1,7 @@
-# Context War visual system
+# Doxomachy visual system
 
 ## Design intent
-Context War should feel like an editorial instrument, not a startup template. The visual reference is a well-typeset newspaper front page crossed with a live terminal status board: precise, sparse, tense. Black and off-white only. The interface earns drama through scale, density, rules and changing numbers rather than color, illustration or effects.
+Doxomachy should feel like an editorial instrument, not a startup template. The visual reference is a well-typeset newspaper front page crossed with a live terminal status board: precise, sparse, tense. Black and off-white only. The interface earns drama through scale, density, rules and changing numbers rather than color, illustration or effects.
 
 ## Typography
 - Display: system grotesk stack `Arial, Helvetica, sans-serif`, 800 weight, -0.055em tracking. Hero ranges from 76px desktop to 44px mobile. No fashionable imported font dependency and no ornamental alternates.

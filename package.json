@@ -1,1 +1,1 @@
-{"name":"context-war","private":true,"scripts":{"test":"node --test"}}
+{"name":"doxomachy","private":true,"scripts":{"test":"node --test"}}

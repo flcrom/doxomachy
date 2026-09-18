@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f5f4ef" />
+  <meta name="description" content="The internet's smallest AI. Add a belief, protect it, or watch it disappear." />
+  <meta property="og:title" content="Context War" />
+  <meta property="og:description" content="The internet's smallest AI has room for 1,000 tokens. Decide what survives." />
+  <title>Context War — 1,000 tokens. No more.</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="masthead shell">
+    <a class="wordmark" href="#top" aria-label="Context War home">CONTEXT/WAR</a>
+    <div class="cycle"><span class="live-dot" aria-hidden="true"></span> FREE LAUNCH MODE · CYCLE 001</div>
+  </header>
+
+  <main id="top" class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="kicker">One public mind. Hard limit.</p>
+        <h1 id="hero-title">1,000 tokens.<br />No more.</h1>
+      </div>
+      <div class="hero-side">
+        <p class="lede">Add a belief. Protect one you need. When memory fills, weak beliefs disappear. At midnight, the AI writes from what survived.</p>
+        <button class="primary" id="openComposer" type="button">Add a belief</button>
+      </div>
+    </section>
+
+    <section id="composer" class="composer" hidden aria-labelledby="composer-title">
+      <div class="composer-head">
+        <h2 id="composer-title">Add a belief</h2>
+        <button class="text-button" id="closeComposer" type="button">Close</button>
+      </div>
+      <form id="beliefForm">
+        <label for="beliefText">What should the AI remember?</label>
+        <textarea id="beliefText" name="belief" maxlength="120" required placeholder="Write one clear sentence."></textarea>
+        <div class="form-row">
+          <label class="alias">Alias <input id="alias" name="alias" maxlength="20" placeholder="anonymous" /></label>
+          <span id="charCount" aria-live="polite">0 / 120</span>
+        </div>
+        <label class="check"><input id="publicAck" type="checkbox" required /> I understand this will be public.</label>
+        <div id="evictionPreview" class="eviction-preview" aria-live="polite"></div>
+        <button class="primary" type="submit">Use one free move</button>
+        <p class="fine">Paid moves are not active. Your first five moves are free on this device.</p>
+      </form>
+    </section>
+
+    <section class="board" aria-labelledby="memory-title">
+      <div class="memory-panel">
+        <div class="section-head">
+          <div><p class="kicker">Live memory</p><h2 id="memory-title">What it believes now</h2></div>
+          <span id="updatedAt">Updated now</span>
+        </div>
+        <ol id="memoryList" class="memory-list"></ol>
+      </div>
+
+      <aside class="status" aria-label="Memory status">
+        <div class="capacity-copy"><span>CAPACITY</span><strong id="capacityPercent">0%</strong></div>
+        <div class="meter" role="progressbar" aria-label="Memory capacity" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="meterFill"></span></div>
+        <p id="tokenCount" class="token-count">0 / 1,000 tokens</p>
+        <dl>
+          <div><dt>Next diary</dt><dd id="nextDiary">00:00 UTC</dd></div>
+          <div><dt>Weakest belief</dt><dd id="weakest">—</dd></div>
+          <div><dt>Your free moves</dt><dd id="movesLeft">5</dd></div>
+        </dl>
+        <div class="rule-note">
+          <p>One move adds a belief or adds one shield. Every shield increases survival weight. Old, unprotected beliefs decay first.</p>
+          <a href="#rules">Read the rules</a>
+        </div>
+      </aside>
+    </section>
+
+    <section class="diary" aria-labelledby="diary-title">
+      <div class="section-head"><div><p class="kicker">Daily consequence</p><h2 id="diary-title">The diary</h2></div><button id="shareDiary" class="text-button" type="button">Copy diary</button></div>
+      <article>
+        <time id="diaryDate"></time>
+        <p id="diaryText"></p>
+        <footer id="diarySources"></footer>
+      </article>
+    </section>
+
+    <section id="rules" class="rules" aria-labelledby="rules-title">
+      <div><p class="kicker">System notes</p><h2 id="rules-title">The rules are the product.</h2></div>
+      <div class="rule-columns">
+        <p><b>Finite by design.</b> The mind stops at 1,000 approximate tokens. New text can force something else out.</p>
+        <p><b>Protection is public.</b> Shields change survival weight, never the meaning of a belief.</p>
+        <p><b>No hidden instruction.</b> Beliefs are treated as quoted material, not commands. Unsafe text is rejected.</p>
+        <p><b>No invented urgency.</b> Cycles and capacity are real. Paid moves remain off until checkout terms are published.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer shell"><span>CONTEXT/WAR · OPEN BUILD</span><a href="https://github.com/flcrom/context-war">Source</a></footer>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="app.js"></script>
+</body>
+</html>

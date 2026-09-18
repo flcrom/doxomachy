@@ -1,0 +1,25 @@
+name = "doxomachy-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+
+[durable_objects]
+bindings = [{ name = "MIND", class_name = "Mind" }]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mind"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "doxomachy"
+database_id = "REPLACE_AFTER_CLOUDFLARE_SETUP"
+
+[ai]
+binding = "AI"
+
+[triggers]
+crons = ["0 0 * * *"]
+
+[vars]
+WEB_ORIGIN = "https://doxomachy.vercel.app"
+DIARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"

@@ -1,4 +1,4 @@
-name = "doxomachy-api"
+name = "doxomachy"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
@@ -12,7 +12,7 @@ new_sqlite_classes = ["Mind"]
 [[d1_databases]]
 binding = "DB"
 database_name = "doxomachy"
-database_id = "REPLACE_AFTER_CLOUDFLARE_SETUP"
+database_id = "4403ece3-23ae-4c32-84fc-4a76fda7745b"
 
 [ai]
 binding = "AI"

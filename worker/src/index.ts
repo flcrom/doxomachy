@@ -14,7 +14,7 @@ export default {
 };
 
 type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number};
-export class Mind extends DurableObject {
+export class Mind {
  constructor(private state:DurableObjectState,private env:Env){}
  async snapshot(){return (await this.state.storage.get<{beliefs:Belief[];cycle:number}>('mind'))||{beliefs:[],cycle:1}}
  async fetch(request:Request){

@@ -23,7 +23,7 @@ const unsafe=(s:string)=>/https?:\/\/|www\.|\b(?:kill|suicide|rape|doxx?|passwor
 const day=()=>new Date().toISOString().slice(0,10);
 export class Mind {
  constructor(private state:DurableObjectState,private env:Env){}
- async snapshot():Promise<MindState>{const saved=await this.state.storage.get<MindState>('mind');return saved||{beliefs:[],cycle:1,clients:{}}}
+ async snapshot():Promise<MindState>{const saved=await this.state.storage.get<MindState>('mind');return {beliefs:saved?.beliefs||[],cycle:saved?.cycle||1,clients:saved?.clients||{}}}
  client(mind:MindState,id:string){const key=id.slice(0,80)||'anonymous';const today=day();if(!mind.clients[key]||mind.clients[key].day!==today)mind.clients[key]={moves:5,day:today};return mind.clients[key]}
  async fetch(request:Request){
   const url=new URL(request.url);const mind=await this.snapshot();
@@ -51,4 +51,4 @@ export class Mind {
   }
   return json({error:'not_found'},404);
  }
-}
+                                                                                                                                                                                                  }

@@ -72,16 +72,16 @@ describe('worker instrumentation',()=>{
     const {worker}=await import('../src/index');
     const origin='https://doxomachy.vercel.app';
     const proxied=await worker.fetch(new Request('https://api.example/v1/mind',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
-    expect(proxied.headers.get('access-control-expose-headers')).toBe('x-correlation-id');
+    expect(proxied.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
     const direct=await worker.fetch(new Request('https://api.example/health',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
-    expect(direct.headers.get('access-control-expose-headers')).toBe('x-correlation-id');
+    expect(direct.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
     expect(direct.headers.get('x-correlation-id')).toMatch(/^[0-9a-f-]{36}$/);
     const earlyError=await worker.fetch(new Request('https://api.example/nope',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
     expect(earlyError.status).toBe(404);
-    expect(earlyError.headers.get('access-control-expose-headers')).toBe('x-correlation-id');
+    expect(earlyError.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
     const tooLarge=await worker.fetch(new Request('https://api.example/v1/session',{method:'POST',headers:{Origin:origin,'content-length':'999999'}}),envWith(()=>new Response('{}')) as any);
     expect(tooLarge.status).toBe(413);
-    expect(tooLarge.headers.get('access-control-expose-headers')).toBe('x-correlation-id');
+    expect(tooLarge.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
     vi.restoreAllMocks();
   });
 

@@ -25,6 +25,15 @@ WEB_ORIGIN = "https://doxomachy.flcrom.dev"
 WEB_ORIGINS = "https://doxomachy.flcrom.dev,https://doxomachy.vercel.app"
 DIARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
+WEB_ORIGIN_EXTRA = "https://doxomachy.vercel.app"
+
+# Auth configuration (magic-link sign-in):
+#   AUTH_FROM                 - verified sender, e.g. "Doxomachy <login@account.flcrom.dev>" (var, set once decided)
+#   RESEND_API_KEY            - secret: wrangler secret put RESEND_API_KEY
+#   AUTH_EMAIL_PEPPER         - secret: wrangler secret put AUTH_EMAIL_PEPPER (32+ random bytes; store a backup in the vault; without it every account lookup key is orphaned)
+#   AUTH_EMAIL_PEPPER_PREVIOUS - secret, only during rotation: comma-separated key ring of outgoing peppers, tried in order; existing accounts resolve through them and rows are lazily re-keyed to AUTH_EMAIL_PEPPER on next use. Remove an entry ONLY after the pepper_id gate query in docs/operations-runbook.md returns 0 rows for it - dormant paid accounts may need it indefinitely.
+# WEB_ORIGIN is the canonical origin (magic-link base); WEB_ORIGIN_EXTRA lists cutover origins. All must be https.
+
 # Application logs are allowlisted JSON emitted by src/observability.ts.
 # Invocation logs stay disabled: they would record request metadata such as
 # client IP addresses, which the product privacy posture does not need.

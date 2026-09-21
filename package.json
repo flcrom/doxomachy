@@ -1,1 +1,1 @@
-{"name":"doxomachy","private":true,"scripts":{"test":"node --test test/*.test.js"}}
+{"name":"doxomachy","private":true,"scripts":{"test":"node --experimental-sqlite --test test/*.test.js"}}

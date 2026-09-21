@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#f5f4ef" />
+  <meta name="description" content="Sign in to Doxomachy with an email link. Your paid moves stay with your account." />
+  <title>Account · Doxomachy</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="masthead shell">
+    <a class="wordmark" href="/">DOXOMACHY</a>
+    <div class="cycle">ACCOUNT</div>
+  </header>
+
+  <main class="shell">
+    <section class="hero" aria-labelledby="account-title">
+      <div>
+        <p class="kicker">Email sign-in</p>
+        <h1 id="account-title">Your moves,<br />any device.</h1>
+      </div>
+      <div class="hero-side">
+        <p class="lede">One email link signs you in. No password. Paid moves stay with the account, not the browser.</p>
+      </div>
+    </section>
+
+    <section class="composer" id="requestPanel" aria-labelledby="request-title" hidden>
+      <div class="composer-head"><h2 id="request-title">Request a sign-in link</h2></div>
+      <form id="linkForm">
+        <label for="email">Email address</label>
+        <div class="auth-row">
+          <input class="auth-input" id="email" name="email" type="email" required maxlength="254" autocomplete="email" placeholder="you@example.com" />
+          <button class="primary" type="submit">Email me a link</button>
+        </div>
+        <p class="fine">The link works once, for 15 minutes. Each device stays signed in for 30 days until you sign out.</p>
+      </form>
+      <p id="requestStatus" class="eviction-preview" role="status" aria-live="polite"></p>
+    </section>
+
+    <section class="composer" id="sessionPanel" aria-labelledby="session-title" hidden>
+      <div class="composer-head"><h2 id="session-title">Signed in</h2></div>
+      <dl class="auth-dl">
+        <div><dt>Paid moves</dt><dd id="creditBalance">0</dd></div>
+      </dl>
+      <div class="auth-actions">
+        <button class="text-button" id="signOut" type="button">Sign out this device</button>
+        <button class="text-button" id="signOutAll" type="button">Sign out all devices</button>
+        <button class="text-button auth-danger" id="deleteAccount" type="button">Delete account</button>
+      </div>
+      <p class="fine">Paid checkout is not active yet. Moves you buy later will appear here. Deleting an account requires its paid moves to be refunded first.</p>
+      <p id="sessionStatus" class="eviction-preview" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <footer class="footer shell"><a href="/">Doxomachy</a><span><a href="terms.html">Terms</a> · <a href="privacy.html">Privacy</a> · <a href="mailto:vardhman.47th@gmail.com?subject=Doxomachy%20support">Support</a></span></footer>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="account-token.js"></script>
+  <script src="account.js"></script>
+</body>
+</html>

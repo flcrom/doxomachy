@@ -64,3 +64,22 @@ Review the dry-run bundle only. Deployment, migration application, secret change
 ## Rollback
 
 Revert the release commit and run the same checks. Deploying the rollback still requires explicit approval. Do not delete delivery, order, ledger or diary records. Preserve correlation IDs and timestamps in the incident note, without private or payment data.
+
+## Auth pepper rotation
+
+1. Generate a new pepper (32+ random bytes) and store a backup in the vault.
+2. Set `AUTH_EMAIL_PEPPER_PREVIOUS` to the current pepper's value (append to the comma-separated ring if one is already set), then update `AUTH_EMAIL_PEPPER` to the new value and redeploy.
+3. Existing accounts keep resolving through the ring and are lazily re-keyed to the new pepper on next sign-in. New sign-ins use the new pepper immediately.
+4. Remove an old entry from the ring ONLY when its fingerprint is gone:
+
+   ```
+   wrangler d1 execute <db> --command "SELECT pepper_id, COUNT(*) FROM accounts GROUP BY pepper_id"
+   ```
+
+   `pepper_id` is the first 8 hex chars of `sha256('doxomachy-pepper:' + pepper)`. Compute an entry's fingerprint exactly:
+
+   ```
+   printf 'doxomachy-pepper:%s' "$OLD_PEPPER" | shasum -a 256 | cut -c1-8
+   ```
+
+   An entry is safe to drop when no account row carries that fingerprint. A dormant paid account may keep an old fingerprint indefinitely; dropping its ring entry orphans the account, so when in doubt, keep the entry.

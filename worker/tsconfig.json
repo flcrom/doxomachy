@@ -15,8 +15,10 @@
   },
   "files": [
     "src/index.ts",
+    "src/auth.ts",
     "src/observability.ts",
     "test/security.test.ts",
-    "test/observability.test.ts"
+    "test/observability.test.ts",
+    "test/auth.test.ts"
   ]
 }

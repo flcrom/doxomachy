@@ -23,3 +23,16 @@ crons = ["0 0 * * *"]
 [vars]
 WEB_ORIGIN = "https://doxomachy.vercel.app"
 DIARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+# Application logs are allowlisted JSON emitted by src/observability.ts.
+# Invocation logs stay disabled: they would record request metadata such as
+# client IP addresses, which the product privacy posture does not need.
+# Workers Free includes 200,000 log events/day with 3-day retention.
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+invocation_logs = false

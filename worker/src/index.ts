@@ -21,7 +21,7 @@ const unsafeOutput=(s:string)=>unsafeInput(s)||/(?:BEGIN|END) (?:SYSTEM|PROMPT)|
 const day=()=>new Date().toISOString().slice(0,10);
 const mindStub=(env:Env)=>env.MIND.get(env.MIND.idFromName('public-mind'));
 const allowedOrigins=(env:Env)=>new Set((env.WEB_ORIGINS||env.WEB_ORIGIN).split(',').map(x=>x.trim()).filter(Boolean));
-async function anonymizeClient(value:string){const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('doxomachy-realtime:'+value));return [...new Uint8Array(bytes).slice(0,16)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+async function anonymizeClient(value:string,purpose='realtime'){const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('doxomachy-'+purpose+':'+value));return [...new Uint8Array(bytes).slice(0,16)].map(x=>x.toString(16).padStart(2,'0')).join('')}
 function socketCountForClient(sockets:WebSocket[],clientKey:string){return sockets.reduce((n,s)=>{try{return n+(s.deserializeAttachment()?.clientKey===clientKey?1:0)}catch{return n}},0)}
 const routeRequest=(request:Request,headers:Headers)=>new Request(request.url,{method:request.method,headers,body:request.method==='GET'||request.method==='HEAD'?undefined:request.body});
 
@@ -38,7 +38,7 @@ export const worker = {
   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'doxomachy-api'},200,origin||undefined);
   if(request.method==='POST'&&Number(request.headers.get('content-length')||0)>MAX_BODY)return json({error:'payload_too_large'},413,origin||undefined);
   const forwarded=new Headers();
-  forwarded.set('x-client-ip',request.headers.get('CF-Connecting-IP')||'unknown');
+  forwarded.set('x-issuance-key',await anonymizeClient(request.headers.get('CF-Connecting-IP')||'unknown','issuance'));
   forwarded.set('content-type',request.headers.get('content-type')||'');
   const auth=request.headers.get('authorization')||'';
   if(auth.startsWith('Bearer '))forwarded.set('x-session-id',auth.slice(7));
@@ -121,7 +121,7 @@ export class Mind {
   if(url.pathname==='/v1/session'&&request.method==='POST'){
    return this.enqueue(async()=>{
     const m=await this.load();this.prune(m,now);
-    const ip=request.headers.get('x-client-ip')||'unknown';const [ok,c]=counterOk(m.issuance[ip],10,60*60_000,now);m.issuance[ip]=c;if(!ok){await this.save(m);return json({error:'rate_limited'},429)}
+    const issuanceKey=request.headers.get('x-issuance-key')||'';if(!/^[0-9a-f]{32}$/.test(issuanceKey))return json({error:'invalid_client'},400);const [ok,c]=counterOk(m.issuance[issuanceKey],10,60*60_000,now);m.issuance[issuanceKey]=c;if(!ok){await this.save(m);return json({error:'rate_limited'},429)}
     const id=crypto.randomUUID()+crypto.randomUUID().replaceAll('-','');m.sessions[id]={moves:5,day:day(),createdAt:now,lastSeen:now,burst:{count:0,window:now}};await this.save(m);return json({token:id,moves:5,expiresIn:SESSION_TTL/1000},201);
    });
   }

@@ -105,3 +105,19 @@ describe('diary read failure',()=>{
   const body:any=await (await mind.fetch(new Request('https://mind.internal/v1/mind'))).json();expect(body.diary).toBeNull();expect(writes).toBe(0);expect(persisted.mind.diary).toBeUndefined();
  });
 });
+
+
+describe('privacy-preserving session issuance',()=>{
+ it('routes only a purpose-separated anonymous issuance key',async()=>{
+  let routed:any;const env:any={WEB_ORIGIN:'https://doxomachy.flcrom.dev',MIND:{idFromName:()=>({}),get:()=>({fetch:(r:any)=>{routed=r;return new Response('{}')}})}};
+  const {worker}=await import('../src/index');await worker.fetch(new Request('https://api.example/v1/session',{method:'POST',headers:{Origin:env.WEB_ORIGIN,'CF-Connecting-IP':'203.0.113.9','content-type':'application/json'}}),env);
+  const issuance=routed.headers.get('x-issuance-key');expect(issuance).toMatch(/^[0-9a-f]{32}$/);expect(routed.headers.get('x-client-ip')).toBeNull();expect([...routed.headers.values()].join(' ')).not.toContain('203.0.113.9');
+  expect(issuance).not.toBe(await policy.anonymizeClient('203.0.113.9','realtime'));
+ });
+ it('keeps deterministic hashed issuance counters and no raw IP in persisted state',async()=>{
+  const persisted:any={};const state:any={blockConcurrencyWhile:(fn:any)=>fn(),storage:{get:async(k:string)=>persisted[k],put:async(k:string,v:any)=>{persisted[k]=structuredClone(v)}},getWebSockets:()=>[]};
+  const env:any={DB:{prepare:()=>({first:async()=>null})}};const {Mind}=await import('../src/index');const mind=new Mind(state,env);await Promise.resolve();const key=await policy.anonymizeClient('203.0.113.9','issuance');
+  for(let i=0;i<2;i++)expect((await mind.fetch(new Request('https://mind.internal/v1/session',{method:'POST',headers:{'x-issuance-key':key}}))).status).toBe(201);
+  expect(Object.keys(persisted.mind.issuance)).toEqual([key]);expect(JSON.stringify(persisted)).not.toContain('203.0.113.9');expect(persisted.mind.issuance[key].count).toBe(2);
+ });
+});

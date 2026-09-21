@@ -1,13 +1,13 @@
 import llama3Tokenizer from 'llama3-tokenizer-js';
 
-export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; WEB_ORIGIN: string; DIARY_MODEL: string }
+export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string }
 type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number};
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
 type Idempotent={status:number;body:unknown;createdAt:number};
-type MindState={beliefs:Belief[];cycle:number;version?:number;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
+type MindState={beliefs:Belief[];cycle:number;version?:number;diary?:unknown;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
 
-const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000;
+const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200;
 const securityHeaders={
  'content-type':'application/json; charset=utf-8','x-content-type-options':'nosniff','x-frame-options':'DENY',
  'referrer-policy':'no-referrer','permissions-policy':'camera=(), microphone=(), geolocation=()',
@@ -20,15 +20,17 @@ const unsafeInput=(s:string)=>/https?:\/\/|www\.|\b(?:kill|suicide|rape|doxx?|pa
 const unsafeOutput=(s:string)=>unsafeInput(s)||/(?:BEGIN|END) (?:SYSTEM|PROMPT)|\b(?:api[_ -]?key|password)\s*[:=]/i.test(s);
 const day=()=>new Date().toISOString().slice(0,10);
 const mindStub=(env:Env)=>env.MIND.get(env.MIND.idFromName('public-mind'));
+const allowedOrigins=(env:Env)=>new Set((env.WEB_ORIGINS||env.WEB_ORIGIN).split(',').map(x=>x.trim()).filter(Boolean));
 const routeRequest=(request:Request,headers:Headers)=>new Request(request.url,{method:request.method,headers,body:request.method==='GET'||request.method==='HEAD'?undefined:request.body});
 
 export const worker = {
  async fetch(request:Request,env:Env){
   const origin=request.headers.get('Origin')||'';
-  if(origin&&origin!==env.WEB_ORIGIN)return json({error:'origin_not_allowed'},403);
+  const origins=allowedOrigins(env);
+  if(origin&&!origins.has(origin))return json({error:'origin_not_allowed'},403);
   if(request.method==='OPTIONS'){
-   if(origin!==env.WEB_ORIGIN)return json({error:'origin_not_allowed'},403);
-   return new Response(null,{status:204,headers:{...headers(env.WEB_ORIGIN),'access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'content-type, authorization, idempotency-key','access-control-max-age':'600'}});
+   if(!origins.has(origin))return json({error:'origin_not_allowed'},403);
+   return new Response(null,{status:204,headers:{...headers(origin),'access-control-allow-methods':'GET,POST,OPTIONS','access-control-allow-headers':'content-type, authorization, idempotency-key','access-control-max-age':'600'}});
   }
   const url=new URL(request.url);
   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'doxomachy-api'},200,origin||undefined);
@@ -42,7 +44,8 @@ export const worker = {
   if(url.pathname==='/v1/session'&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
   if(url.pathname==='/v1/mind'&&request.method==='GET')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
   if(url.pathname==='/v1/realtime'&&request.method==='GET'){
-   if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426,origin||undefined);
+   if(!origin||!origins.has(origin))return json({error:'origin_not_allowed'},403);
+   if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426,origin);
    return mindStub(env).fetch(request);
   }
   if((url.pathname==='/v1/beliefs'||/^\/v1\/beliefs\/[^/]+\/protect$/.test(url.pathname))&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
@@ -70,9 +73,15 @@ export class Mind {
   if(this.cache.version===undefined)this.cache.version=0;
   return this.cache;
  }
- private publicState(m:MindState){return {type:'snapshot',version:m.version||0,beliefs:m.beliefs,cycle:m.cycle,diary:this.diaryRow}}
- private broadcast(m:MindState){
-  const payload=JSON.stringify(this.publicState(m));
+ private async ensureDiary(m:MindState){
+  if(this.diaryLoaded)return;
+  if(m.diary!==undefined)this.diaryRow=m.diary;
+  else{try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{this.diaryRow=null};m.diary=this.diaryRow;await this.save(m)}
+  m.diary=this.diaryRow;this.diaryLoaded=true;
+ }
+ private publicState(m:MindState){return {type:'snapshot',version:m.version||0,beliefs:m.beliefs,cycle:m.cycle,diary:m.diary??null}}
+ private async broadcast(m:MindState){
+  await this.ensureDiary(m);const payload=JSON.stringify(this.publicState(m));
   for(const socket of this.state.getWebSockets())try{socket.send(payload)}catch{try{socket.close(1011,'send failed')}catch{}}
  }
  private save(m:MindState){return this.state.storage.put('mind',m)}
@@ -90,9 +99,9 @@ export class Mind {
   const url=new URL(request.url),now=Date.now();
   if(url.pathname==='/v1/realtime'){
    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426);
+   if(this.state.getWebSockets().length>=MAX_SOCKETS)return json({error:'realtime_capacity'},503);
    const pair=new WebSocketPair();const [client,server]=Object.values(pair);this.state.acceptWebSocket(server);
-   const m=await this.load();
-   if(!this.diaryLoaded){try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{}this.diaryLoaded=true}
+   const m=await this.load();await this.ensureDiary(m);
    server.send(JSON.stringify(this.publicState(m)));
    return new Response(null,{status:101,webSocket:client});
   }
@@ -102,8 +111,8 @@ export class Mind {
    const m=await this.load();this.prune(m,now);
    const token=request.headers.get('x-session-id')||'',s=m.sessions[token];let moves:undefined|number;
    if(s){if(s.day!==day()){s.day=day();s.moves=5}s.lastSeen=now;moves=s.moves} // in-memory only: no storage write on reads
-   if(!this.diaryLoaded){try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{}this.diaryLoaded=true}
-   return json({beliefs:m.beliefs,cycle:m.cycle,version:m.version||0,moves,diary:this.diaryRow});
+   await this.ensureDiary(m);
+   return json({beliefs:m.beliefs,cycle:m.cycle,version:m.version||0,moves,diary:m.diary??null});
   }
   if(url.pathname==='/v1/session'&&request.method==='POST'){
    return this.enqueue(async()=>{
@@ -122,7 +131,7 @@ export class Mind {
    return this.enqueue(async()=>{
     const m2=await this.load();this.prune(m2,Date.now());
     const cycle=String(m2.cycle).padStart(3,'0'),created=Date.now();await this.env.DB.prepare('INSERT OR REPLACE INTO diaries (cycle,text,belief_ids,model,created_at) VALUES (?,?,?,?,?)').bind(cycle,text,JSON.stringify(m2.beliefs.map(b=>b.id)),this.env.DIARY_MODEL,created).run();m2.cycle++;m2.version=(m2.version||0)+1;await this.save(m2);
-    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};this.diaryLoaded=true;this.broadcast(m2);
+    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};m2.diary=this.diaryRow;this.diaryLoaded=true;await this.save(m2);await this.broadcast(m2);
     return json({cycle,text,createdAt:created,version:m2.version});
    });
   }
@@ -141,13 +150,13 @@ export class Mind {
     const tokens=llama3Tokenizer.encode(text,{bos:false,eos:false}).length;if(tokens>1000)return json({error:'belief_too_large'},400);
     const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',shields:1,createdAt:now,tokens};m.beliefs.push(belief);const evicted:Belief[]=[];
     while(m.beliefs.reduce((n,b)=>n+b.tokens,0)>1000){m.beliefs.sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt);const gone=m.beliefs.shift();if(gone)evicted.push(gone)}
-    session.moves--;m.version=(m.version||0)+1;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);this.broadcast(m);return json(bodyOut,201);
+    session.moves--;m.version=(m.version||0)+1;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);await this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.broadcast(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);await this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   });
  }
- webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){if(message==='ping')try{socket.send('pong')}catch{}}
+ async webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){if(message==='ping')try{const m=await this.load();await this.ensureDiary(m);socket.send(JSON.stringify(this.publicState(m)))}catch{}}
  webSocketClose(socket:WebSocket,code:number,reason:string,wasClean:boolean){try{socket.close(code,reason)}catch{}}
  webSocketError(socket:WebSocket){try{socket.close(1011,'socket error')}catch{}}
 }

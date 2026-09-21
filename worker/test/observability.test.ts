@@ -126,7 +126,7 @@ describe('Durable Object readiness and signals',()=>{
   const makeMind=async()=>{
     const {Mind}=await import('../src/index');
     const store=new Map<string,unknown>();
-    const state:any={storage:{get:(k:string)=>Promise.resolve(store.get(k)),put:(k:string,v:unknown)=>{store.set(k,v);return Promise.resolve()}},blockConcurrencyWhile:(fn:()=>Promise<void>)=>fn()};
+    const state:any={storage:{get:(k:string)=>Promise.resolve(store.get(k)),put:(k:string,v:unknown)=>{store.set(k,v);return Promise.resolve()}},blockConcurrencyWhile:(fn:()=>Promise<void>)=>fn(),getWebSockets:()=>[]};
     const env:any={WEB_ORIGIN:'https://doxomachy.vercel.app',DIARY_MODEL:'@cf/test-model',DB:{prepare:()=>({first:()=>Promise.resolve(null),run:()=>Promise.resolve({})})},AI:{run:()=>Promise.reject(new Error('quota'))}};
     return new Mind(state,env);
   };
@@ -148,7 +148,7 @@ describe('Durable Object readiness and signals',()=>{
     const err=vi.spyOn(console,'error').mockImplementation(()=>{});
     const mind=await makeMind();
     // seed one belief through a session + move
-    const session=await (await mind.fetch(new Request('https://mind.internal/v1/session',{method:'POST',headers:{'x-client-ip':'1.2.3.4'}}))).json() as any;
+    const session=await (await mind.fetch(new Request('https://mind.internal/v1/session',{method:'POST',headers:{'x-issuance-key':'0123456789abcdef0123456789abcdef'}}))).json() as any;
     await mind.fetch(new Request('https://mind.internal/v1/beliefs',{method:'POST',headers:{'content-type':'application/json','x-session-id':session.token,'idempotency-key':'abcdef0123456789'},body:JSON.stringify({text:'Calm systems deserve quiet attention.'})}));
     const diary=await mind.fetch(new Request('https://mind.internal/v1/diary',{method:'POST',headers:{'x-internal-scheduled':'1'}}));
     expect(diary.status).toBe(502);

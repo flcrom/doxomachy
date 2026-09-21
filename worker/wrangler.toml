@@ -21,7 +21,8 @@ binding = "AI"
 crons = ["0 0 * * *"]
 
 [vars]
-WEB_ORIGIN = "https://doxomachy.vercel.app"
+WEB_ORIGIN = "https://doxomachy.flcrom.dev"
+WEB_ORIGINS = "https://doxomachy.flcrom.dev,https://doxomachy.vercel.app"
 DIARY_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 # Application logs are allowlisted JSON emitted by src/observability.ts.

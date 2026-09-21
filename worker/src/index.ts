@@ -1,7 +1,8 @@
 import llama3Tokenizer from 'llama3-tokenizer-js';
 import {correlationId,logEvent,routeTemplate,withCorrelation,Operation,Outcome} from './observability';
+import {makePublicSnapshot,publishIfNewer,snapshotLag} from './public-snapshot';
 
-export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string }
+export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string }
 type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number};
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
@@ -109,6 +110,7 @@ export class Mind {
  private diaryLoaded=false;
  private queue:Promise<unknown>=Promise.resolve();
  private pending=0;
+ private snapshotQueue:Promise<void>=Promise.resolve();
  constructor(private state:DurableObjectState,private env:Env){
   this.state.blockConcurrencyWhile(async()=>{
    this.cache=(await this.state.storage.get<MindState>('mind'))||null;
@@ -125,7 +127,12 @@ export class Mind {
   try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{return}
   m.diary=this.diaryRow;await this.save(m);this.diaryLoaded=true;
  }
- private publicState(m:MindState){return {type:'snapshot',version:m.version||0,beliefs:m.beliefs,cycle:m.cycle,diary:m.diary??null}}
+ private publicState(m:MindState){return makePublicSnapshot(m)}
+ private repairSnapshot(m:MindState,id:string){
+  const snapshot=this.publicState(m),started=Date.now();
+  this.snapshotQueue=this.snapshotQueue.then(async()=>{const result=await publishIfNewer(this.env,snapshot);const lag=await snapshotLag(this.env,snapshot.version);logEvent({operation:'durable_object',outcome:result==='failed'?'degraded':'ok',correlationId:id,reason:'snapshot_'+result,durationMs:Date.now()-started,gauges:{snapshot_version:snapshot.version,snapshot_lag:lag.lag??-1}})}).catch(()=>{});
+  this.state.waitUntil?.(this.snapshotQueue);
+ }
  private async broadcast(m:MindState){
   await this.ensureDiary(m);const payload=JSON.stringify(this.publicState(m));
   for(const socket of this.state.getWebSockets())try{socket.send(payload)}catch{try{socket.close(1011,'send failed')}catch{}}
@@ -157,7 +164,7 @@ export class Mind {
    const sockets=this.state.getWebSockets();if(sockets.length>=MAX_SOCKETS)return json({error:'realtime_capacity'},503);
    const clientKey=request.headers.get('x-client-key')||'';if(!clientKey||socketCountForClient(sockets,clientKey)>=MAX_SOCKETS_PER_CLIENT)return json({error:'realtime_client_capacity'},429);
    const pair=new WebSocketPair();const [client,server]=Object.values(pair);server.serializeAttachment({clientKey});this.state.acceptWebSocket(server);
-   const m=await this.load();await this.ensureDiary(m);
+   const m=await this.load();await this.ensureDiary(m);this.repairSnapshot(m,id);
    server.send(JSON.stringify(this.publicState(m)));
    return new Response(null,{status:101,webSocket:client});
   }
@@ -167,7 +174,7 @@ export class Mind {
    const m=await this.load();this.prune(m,now);
    const token=request.headers.get('x-session-id')||'',s=m.sessions[token];let moves:undefined|number;
    if(s){if(s.day!==day()){s.day=day();s.moves=5}s.lastSeen=now;moves=s.moves} // in-memory only: no storage write on reads
-   await this.ensureDiary(m);
+   await this.ensureDiary(m);this.repairSnapshot(m,id);
    return json({beliefs:m.beliefs,cycle:m.cycle,version:m.version||0,moves,diary:m.diary??null});
   }
   if(url.pathname==='/v1/session'&&request.method==='POST'){
@@ -190,7 +197,7 @@ export class Mind {
    return this.enqueue(async()=>{
     const m2=await this.load();this.prune(m2,Date.now());
     const cycle=String(m2.cycle).padStart(3,'0'),created=Date.now();await this.env.DB.prepare('INSERT OR REPLACE INTO diaries (cycle,text,belief_ids,model,created_at) VALUES (?,?,?,?,?)').bind(cycle,text,JSON.stringify(m2.beliefs.map(b=>b.id)),this.env.DIARY_MODEL,created).run();m2.cycle++;m2.version=(m2.version||0)+1;
-    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};m2.diary=this.diaryRow;this.diaryLoaded=true;await this.save(m2);await this.broadcast(m2);
+    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};m2.diary=this.diaryRow;this.diaryLoaded=true;await this.save(m2);this.repairSnapshot(m2,id);await this.broadcast(m2);
     logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'diary_written',gauges:{beliefs:m2.beliefs.length}});
     return json({cycle,text,createdAt:created,version:m2.version});
    },id);
@@ -213,9 +220,9 @@ export class Mind {
     while(m.beliefs.reduce((n,b)=>n+b.tokens,0)>1000){m.beliefs.sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt);const gone=m.beliefs.shift();if(gone)evicted.push(gone)}
     session.moves--;m.version=(m.version||0)+1;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);
     if(evicted.length)logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'capacity_eviction',gauges:{evicted:evicted.length,tokens_used:m.beliefs.reduce((n,b)=>n+b.tokens,0)}});
-    await this.broadcast(m);return json(bodyOut,201);
+    this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);await this.broadcast(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   },id);
  }

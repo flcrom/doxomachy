@@ -1,0 +1,4 @@
+# Copy to worker/.dev.vars for local `wrangler dev`. Never commit real values.
+# TEST-mode credentials only: live mode stays off until the owner enables it.
+DODO_API_KEY=replace-with-test-mode-api-key
+DODO_WEBHOOK_SECRET=whsec_replace-with-test-mode-webhook-signing-secret

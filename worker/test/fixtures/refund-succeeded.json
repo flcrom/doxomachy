@@ -1,0 +1,17 @@
+{
+  "business_id": "bus_test_fixture",
+  "type": "refund.succeeded",
+  "timestamp": "2026-09-18T13:00:00.000000Z",
+  "data": {
+    "payload_type": "Refund",
+    "refund_id": "ref_test_5pack",
+    "payment_id": "pay_test_5pack",
+    "status": "succeeded",
+    "amount": 500,
+    "currency": "USD",
+    "is_partial": false,
+    "reason": "customer_request",
+    "customer": { "customer_id": "cus_test_buyer", "email": "buyer@example.test", "name": "Test Buyer" },
+    "metadata": {}
+  }
+}

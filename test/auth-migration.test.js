@@ -8,7 +8,7 @@ const fs=require('node:fs');const path=require('node:path');
 const root=path.join(__dirname,'..');
 const m1=fs.readFileSync(path.join(root,'worker/migrations/0001.sql'),'utf8');
 const m2=fs.readFileSync(path.join(root,'worker/migrations/0002.sql'),'utf8');
-const rollback=fs.readFileSync(path.join(root,'worker/migrations/0002.rollback.sql'),'utf8');
+const rollback=fs.readFileSync(path.join(root,'docs/runbooks/0002-auth-rollback.sql'),'utf8');
 
 const SQL={
  verifyConsume:'UPDATE magic_links SET consumed_at = ?, consume_key = ? WHERE token_hash = ? AND consumed_at IS NULL AND expires_at > ?',

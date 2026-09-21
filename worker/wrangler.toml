@@ -34,6 +34,17 @@ WEB_ORIGIN_EXTRA = "https://doxomachy.vercel.app"
 #   AUTH_EMAIL_PEPPER_PREVIOUS - secret, only during rotation: comma-separated key ring of outgoing peppers, tried in order; existing accounts resolve through them and rows are lazily re-keyed to AUTH_EMAIL_PEPPER on next use. Remove an entry ONLY after the pepper_id gate query in docs/operations-runbook.md returns 0 rows for it - dormant paid accounts may need it indefinitely.
 # WEB_ORIGIN is the canonical origin (magic-link base); WEB_ORIGIN_EXTRA lists cutover origins. All must be https.
 
+# --- Dodo Payments (TEST MODE ONLY) ---------------------------------------
+# Live payments stay disabled until the owner finishes Dodo KYC/bank payout
+# and explicitly flips these. Secrets go in via `wrangler secret put`:
+#   DODO_API_KEY          test-mode API key (Developer -> API Keys)
+#   DODO_WEBHOOK_SECRET   test-mode webhook signing secret, whsec_... (Developer -> Webhooks -> endpoint Overview)
+DODO_API_BASE = "https://test.dodopayments.com"
+DODO_PRODUCT_ID = "" # TEST-mode product id for the $5 five-move pack; set after the product exists
+DODO_RETURN_URL = "https://doxomachy.vercel.app/pricing.html?checkout=return"
+DODO_CHECKOUT_ENABLED = "false" # keep "false" until the owner approves paid checkout
+DODO_BUSINESS_ID = "" # optional: when set, webhook events with a missing or different business_id are rejected
+
 # Application logs are allowlisted JSON emitted by src/observability.ts.
 # Invocation logs stay disabled: they would record request metadata such as
 # client IP addresses, which the product privacy posture does not need.

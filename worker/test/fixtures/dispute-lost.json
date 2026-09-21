@@ -1,0 +1,16 @@
+{
+  "business_id": "bus_test_fixture",
+  "type": "dispute.lost",
+  "timestamp": "2026-09-18T16:00:00.000000Z",
+  "data": {
+    "payload_type": "Dispute",
+    "dispute_id": "dsp_test_5pack",
+    "payment_id": "pay_test_5pack",
+    "dispute_status": "dispute_lost",
+    "dispute_stage": "dispute",
+    "amount": "500",
+    "currency": "USD",
+    "is_resolved_by_rdr": false,
+    "customer": { "customer_id": "cus_test_buyer", "email": "buyer@example.test", "name": "Test Buyer" }
+  }
+}

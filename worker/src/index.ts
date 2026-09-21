@@ -2,8 +2,9 @@ import llama3Tokenizer from 'llama3-tokenizer-js';
 import {correlationId,logEvent,routeTemplate,withCorrelation,Operation,Outcome} from './observability';
 import {makePublicSnapshot,publishIfNewer,snapshotLag} from './public-snapshot';
 import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, refundAccountCredit, requireAccount, settleAccountSpend, spendAccountCredit, accountCreditBalance, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
+import { handleDodoWebhook, handleCheckoutSession, handleDodoReconcile } from './payments/routes';
 
-export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string }
+export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
 type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number};
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
@@ -88,8 +89,27 @@ async function handleRequest(request:Request,env:Env,id:string):Promise<Response
   }
   const url=new URL(request.url);
   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'doxomachy-api'},200,origin||undefined);
+  // Dodo Payments (test mode). The webhook is server-to-server and authenticates by
+  // Standard Webhooks signature, not Origin/CORS; Dodo sends no Origin header, so it
+  // passes the origin check above. Webhook bodies can exceed the 2KB browser limit,
+  // so this route sits before MAX_BODY; the handler enforces a 32KB ACTUAL-BYTE cap.
+  if(url.pathname==='/webhooks/dodo'&&request.method==='POST'){
+   if(Number(request.headers.get('content-length')||0)>1048576)return json({error:'payload_too_large'},413);
+   const hooked=addCors(await handleDodoWebhook(request,env),'');
+   hooked.headers.delete('access-control-allow-origin');hooked.headers.delete('vary');
+   return hooked;
+  }
+  // Ops-only reconciliation job. 404s unless DODO_ADMIN_KEY is configured.
+  if(url.pathname==='/v1/admin/dodo/reconcile'&&request.method==='POST')return addCors(await handleDodoReconcile(request,env),'');
   if(url.pathname==='/ready'&&request.method==='GET')return readiness(env,origin||undefined,id);
   if(request.method==='POST'&&Number(request.headers.get('content-length')||0)>MAX_BODY)return json({error:'payload_too_large'},413,origin||undefined);
+  // Browser payment routes require a browser Origin (no anonymous curl calls) and
+  // an authenticated account session (checked inside the handlers); the caller's
+  // clientId is never trusted. Checkout is hard-gated by DODO_CHECKOUT_ENABLED.
+  if(url.pathname==='/v1/checkout/session'&&request.method==='POST'){
+   if(origin!==env.WEB_ORIGIN)return json({error:'origin_not_allowed'},403);
+   return addCors(await handleCheckoutSession(request,env),origin);
+  }
   const forwarded=new Headers();
   forwarded.set('x-issuance-key',await anonymizeClient(request.headers.get('CF-Connecting-IP')||'unknown','issuance'));
   forwarded.set('x-correlation-id',id);

@@ -7,7 +7,8 @@
       "ES2022"
     ],
     "types": [
-      "@cloudflare/workers-types"
+      "@cloudflare/workers-types",
+      "node"
     ],
     "strict": true,
     "skipLibCheck": true,
@@ -17,8 +18,20 @@
     "src/index.ts",
     "src/auth.ts",
     "src/observability.ts",
+    "src/payments/dodo-client.ts",
+    "src/payments/fulfillment.ts",
+    "src/payments/reconcile.ts",
+    "src/payments/routes.ts",
+    "src/payments/standard-webhooks.ts",
+    "src/payments/store.ts",
     "test/security.test.ts",
     "test/observability.test.ts",
-    "test/auth.test.ts"
+    "test/auth.test.ts",
+    "test/helpers.ts",
+    "test/fulfillment.test.ts",
+    "test/routes.test.ts",
+    "test/standard-webhooks.test.ts",
+    "test/payments-wiring.test.ts",
+    "test/migrations.test.ts"
   ]
 }

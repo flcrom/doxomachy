@@ -1,0 +1,26 @@
+{
+  "business_id": "bus_test_fixture",
+  "type": "payment.succeeded",
+  "timestamp": "2026-09-18T12:00:00.000000Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_test_5pack",
+    "checkout_session_id": "cs_test_5pack",
+    "status": "succeeded",
+    "currency": "USD",
+    "total_amount": 500,
+    "payment_method": "card",
+    "card_last_four": "4242",
+    "card_network": "VISA",
+    "customer": {
+      "customer_id": "cus_test_buyer",
+      "email": "buyer@example.test",
+      "name": "Test Buyer"
+    },
+    "metadata": {
+      "account_id": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb",
+      "intent_key": "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb:idem-fixture-0001",
+      "product_id": "pdt_test_5pack"
+    }
+  }
+}

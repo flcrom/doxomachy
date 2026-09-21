@@ -1,0 +1,19 @@
+{
+  "business_id": "bus_test_fixture",
+  "type": "payment.failed",
+  "timestamp": "2026-09-18T12:00:00.000000Z",
+  "data": {
+    "payload_type": "Payment",
+    "payment_id": "pay_test_failed",
+    "checkout_session_id": "cs_test_failed",
+    "status": "failed",
+    "error_code": "PROCESSING_ERROR",
+    "error_message": "An error occurred while processing your card. Try again in a little bit.",
+    "retry_attempt": 0,
+    "currency": "USD",
+    "total_amount": 500,
+    "payment_method": "card",
+    "customer": { "customer_id": "cus_test_buyer", "email": "buyer@example.test", "name": "Test Buyer" },
+    "metadata": { "client_id": "client-fixture-1" }
+  }
+}

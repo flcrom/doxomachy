@@ -35,3 +35,16 @@ describe('diary authorization boundary',()=>{
   expect(calls).toHaveLength(1);expect(calls[0][0]).toBe('https://mind.internal/v1/diary');expect(calls[0][1].headers['x-internal-scheduled']).toBe('1');
  });
 });
+
+describe('realtime public route',()=>{
+ it('requires a WebSocket upgrade',async()=>{
+  const calls:any[]=[];const env:any={WEB_ORIGIN:'https://doxomachy.vercel.app',MIND:{idFromName:()=>({}),get:()=>({fetch:(...a:any[])=>{calls.push(a);return new Response('{}')}})}};
+  const {worker}=await import('../src/index');const response=await worker.fetch(new Request('https://api.example/v1/realtime',{headers:{Origin:env.WEB_ORIGIN}}),env);
+  expect(response.status).toBe(426);expect(calls).toHaveLength(0);
+ });
+ it('passes an upgraded request to the single public mind object',async()=>{
+  const calls:any[]=[];const env:any={WEB_ORIGIN:'https://doxomachy.vercel.app',MIND:{idFromName:()=>({}),get:()=>({fetch:(...a:any[])=>{calls.push(a);return new Response('{}')}})}};
+  const {worker}=await import('../src/index');await worker.fetch(new Request('https://api.example/v1/realtime',{headers:{Origin:env.WEB_ORIGIN,Upgrade:'websocket'}}),env);
+  expect(calls).toHaveLength(1);expect((calls[0][0] as Request).url).toContain('/v1/realtime');
+ });
+});

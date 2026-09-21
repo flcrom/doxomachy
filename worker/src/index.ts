@@ -5,7 +5,7 @@ type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
 type Idempotent={status:number;body:unknown;createdAt:number};
-type MindState={beliefs:Belief[];cycle:number;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
+type MindState={beliefs:Belief[];cycle:number;version?:number;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
 
 const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000;
 const securityHeaders={
@@ -41,6 +41,10 @@ export const worker = {
   const idem=request.headers.get('idempotency-key');if(idem)forwarded.set('idempotency-key',idem);
   if(url.pathname==='/v1/session'&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
   if(url.pathname==='/v1/mind'&&request.method==='GET')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
+  if(url.pathname==='/v1/realtime'&&request.method==='GET'){
+   if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426,origin||undefined);
+   return mindStub(env).fetch(request);
+  }
   if((url.pathname==='/v1/beliefs'||/^\/v1\/beliefs\/[^/]+\/protect$/.test(url.pathname))&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
   return json({error:'not_found'},404,origin||undefined);
  },
@@ -62,8 +66,14 @@ export class Mind {
   });
  }
  private async load():Promise<MindState>{
-  if(!this.cache)this.cache=(await this.state.storage.get<MindState>('mind'))||{beliefs:[],cycle:1,sessions:{},issuance:{},idempotency:{}};
+  if(!this.cache)this.cache=(await this.state.storage.get<MindState>('mind'))||{beliefs:[],cycle:1,version:0,sessions:{},issuance:{},idempotency:{}};
+  if(this.cache.version===undefined)this.cache.version=0;
   return this.cache;
+ }
+ private publicState(m:MindState){return {type:'snapshot',version:m.version||0,beliefs:m.beliefs,cycle:m.cycle,diary:this.diaryRow}}
+ private broadcast(m:MindState){
+  const payload=JSON.stringify(this.publicState(m));
+  for(const socket of this.state.getWebSockets())try{socket.send(payload)}catch{try{socket.close(1011,'send failed')}catch{}}
  }
  private save(m:MindState){return this.state.storage.put('mind',m)}
  private enqueue<T>(task:()=>Promise<T>):Promise<T>{
@@ -78,6 +88,14 @@ export class Mind {
  }
  async fetch(request:Request){
   const url=new URL(request.url),now=Date.now();
+  if(url.pathname==='/v1/realtime'){
+   if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426);
+   const pair=new WebSocketPair();const [client,server]=Object.values(pair);this.state.acceptWebSocket(server);
+   const m=await this.load();
+   if(!this.diaryLoaded){try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{}this.diaryLoaded=true}
+   server.send(JSON.stringify(this.publicState(m)));
+   return new Response(null,{status:101,webSocket:client});
+  }
   let bodyText='';
   if(request.method==='POST'){try{bodyText=await request.text()}catch{bodyText=''}}
   if(request.method==='GET'){
@@ -85,7 +103,7 @@ export class Mind {
    const token=request.headers.get('x-session-id')||'',s=m.sessions[token];let moves:undefined|number;
    if(s){if(s.day!==day()){s.day=day();s.moves=5}s.lastSeen=now;moves=s.moves} // in-memory only: no storage write on reads
    if(!this.diaryLoaded){try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{}this.diaryLoaded=true}
-   return json({beliefs:m.beliefs,cycle:m.cycle,moves,diary:this.diaryRow});
+   return json({beliefs:m.beliefs,cycle:m.cycle,version:m.version||0,moves,diary:this.diaryRow});
   }
   if(url.pathname==='/v1/session'&&request.method==='POST'){
    return this.enqueue(async()=>{
@@ -103,9 +121,9 @@ export class Mind {
    const text=clean(result?.response||'',1000),words=text.split(/\s+/).filter(Boolean).length;if(!text||words<40||words>120||unsafeOutput(text))return json({error:'diary_generation_rejected'},502);
    return this.enqueue(async()=>{
     const m2=await this.load();this.prune(m2,Date.now());
-    const cycle=String(m2.cycle).padStart(3,'0'),created=Date.now();await this.env.DB.prepare('INSERT OR REPLACE INTO diaries (cycle,text,belief_ids,model,created_at) VALUES (?,?,?,?,?)').bind(cycle,text,JSON.stringify(m2.beliefs.map(b=>b.id)),this.env.DIARY_MODEL,created).run();m2.cycle++;await this.save(m2);
-    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};this.diaryLoaded=true;
-    return json({cycle,text,createdAt:created});
+    const cycle=String(m2.cycle).padStart(3,'0'),created=Date.now();await this.env.DB.prepare('INSERT OR REPLACE INTO diaries (cycle,text,belief_ids,model,created_at) VALUES (?,?,?,?,?)').bind(cycle,text,JSON.stringify(m2.beliefs.map(b=>b.id)),this.env.DIARY_MODEL,created).run();m2.cycle++;m2.version=(m2.version||0)+1;await this.save(m2);
+    this.diaryRow={cycle,text,belief_ids:JSON.stringify(m2.beliefs.map(b=>b.id)),model:this.env.DIARY_MODEL,created_at:created};this.diaryLoaded=true;this.broadcast(m2);
+    return json({cycle,text,createdAt:created,version:m2.version});
    });
   }
   return this.enqueue(async()=>{
@@ -123,12 +141,15 @@ export class Mind {
     const tokens=llama3Tokenizer.encode(text,{bos:false,eos:false}).length;if(tokens>1000)return json({error:'belief_too_large'},400);
     const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',shields:1,createdAt:now,tokens};m.beliefs.push(belief);const evicted:Belief[]=[];
     while(m.beliefs.reduce((n,b)=>n+b.tokens,0)>1000){m.beliefs.sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt);const gone=m.beliefs.shift();if(gone)evicted.push(gone)}
-    session.moves--;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle},moves:session.moves};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);return json(bodyOut,201);
+    session.moves--;m.version=(m.version||0)+1;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session.moves};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   });
  }
+ webSocketMessage(socket:WebSocket,message:string|ArrayBuffer){if(message==='ping')try{socket.send('pong')}catch{}}
+ webSocketClose(socket:WebSocket,code:number,reason:string,wasClean:boolean){try{socket.close(code,reason)}catch{}}
+ webSocketError(socket:WebSocket){try{socket.close(1011,'socket error')}catch{}}
 }
 
 export const policy={clean,unsafeInput,unsafeOutput,counterOk};

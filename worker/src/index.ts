@@ -7,7 +7,7 @@ type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Cou
 type Idempotent={status:number;body:unknown;createdAt:number};
 type MindState={beliefs:Belief[];cycle:number;version?:number;diary?:unknown;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
 
-const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200;
+const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200, MAX_SOCKETS_PER_CLIENT=20;
 const securityHeaders={
  'content-type':'application/json; charset=utf-8','x-content-type-options':'nosniff','x-frame-options':'DENY',
  'referrer-policy':'no-referrer','permissions-policy':'camera=(), microphone=(), geolocation=()',
@@ -21,6 +21,8 @@ const unsafeOutput=(s:string)=>unsafeInput(s)||/(?:BEGIN|END) (?:SYSTEM|PROMPT)|
 const day=()=>new Date().toISOString().slice(0,10);
 const mindStub=(env:Env)=>env.MIND.get(env.MIND.idFromName('public-mind'));
 const allowedOrigins=(env:Env)=>new Set((env.WEB_ORIGINS||env.WEB_ORIGIN).split(',').map(x=>x.trim()).filter(Boolean));
+async function anonymizeClient(value:string){const bytes=await crypto.subtle.digest('SHA-256',new TextEncoder().encode('doxomachy-realtime:'+value));return [...new Uint8Array(bytes).slice(0,16)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+function socketCountForClient(sockets:WebSocket[],clientKey:string){return sockets.reduce((n,s)=>{try{return n+(s.deserializeAttachment()?.clientKey===clientKey?1:0)}catch{return n}},0)}
 const routeRequest=(request:Request,headers:Headers)=>new Request(request.url,{method:request.method,headers,body:request.method==='GET'||request.method==='HEAD'?undefined:request.body});
 
 export const worker = {
@@ -46,7 +48,8 @@ export const worker = {
   if(url.pathname==='/v1/realtime'&&request.method==='GET'){
    if(!origin||!origins.has(origin))return json({error:'origin_not_allowed'},403);
    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426,origin);
-   return mindStub(env).fetch(request);
+   const realtimeHeaders=new Headers({Upgrade:'websocket','x-client-key':await anonymizeClient(request.headers.get('CF-Connecting-IP')||'unknown')});
+   return mindStub(env).fetch(new Request(request.url,{method:'GET',headers:realtimeHeaders}));
   }
   if((url.pathname==='/v1/beliefs'||/^\/v1\/beliefs\/[^/]+\/protect$/.test(url.pathname))&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
   return json({error:'not_found'},404,origin||undefined);
@@ -75,9 +78,9 @@ export class Mind {
  }
  private async ensureDiary(m:MindState){
   if(this.diaryLoaded)return;
-  if(m.diary!==undefined)this.diaryRow=m.diary;
-  else{try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{this.diaryRow=null};m.diary=this.diaryRow;await this.save(m)}
-  m.diary=this.diaryRow;this.diaryLoaded=true;
+  if(m.diary!==undefined){this.diaryRow=m.diary;this.diaryLoaded=true;return}
+  try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{return}
+  m.diary=this.diaryRow;await this.save(m);this.diaryLoaded=true;
  }
  private publicState(m:MindState){return {type:'snapshot',version:m.version||0,beliefs:m.beliefs,cycle:m.cycle,diary:m.diary??null}}
  private async broadcast(m:MindState){
@@ -99,8 +102,9 @@ export class Mind {
   const url=new URL(request.url),now=Date.now();
   if(url.pathname==='/v1/realtime'){
    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426);
-   if(this.state.getWebSockets().length>=MAX_SOCKETS)return json({error:'realtime_capacity'},503);
-   const pair=new WebSocketPair();const [client,server]=Object.values(pair);this.state.acceptWebSocket(server);
+   const sockets=this.state.getWebSockets();if(sockets.length>=MAX_SOCKETS)return json({error:'realtime_capacity'},503);
+   const clientKey=request.headers.get('x-client-key')||'';if(!clientKey||socketCountForClient(sockets,clientKey)>=MAX_SOCKETS_PER_CLIENT)return json({error:'realtime_client_capacity'},429);
+   const pair=new WebSocketPair();const [client,server]=Object.values(pair);server.serializeAttachment({clientKey});this.state.acceptWebSocket(server);
    const m=await this.load();await this.ensureDiary(m);
    server.send(JSON.stringify(this.publicState(m)));
    return new Response(null,{status:101,webSocket:client});
@@ -161,4 +165,4 @@ export class Mind {
  webSocketError(socket:WebSocket){try{socket.close(1011,'socket error')}catch{}}
 }
 
-export const policy={clean,unsafeInput,unsafeOutput,counterOk};
+export const policy={clean,unsafeInput,unsafeOutput,counterOk,anonymizeClient,socketCountForClient};

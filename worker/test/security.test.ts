@@ -80,3 +80,28 @@ describe('realtime admission control',()=>{
   expect(response.status).toBe(503);expect(await response.json()).toEqual({error:'realtime_capacity'});
  });
 });
+
+describe('privacy-preserving socket admission',()=>{
+ it('hashes client IPs deterministically without retaining the raw value',async()=>{
+  const a=await policy.anonymizeClient('203.0.113.9'),b=await policy.anonymizeClient('203.0.113.9'),c=await policy.anonymizeClient('203.0.113.10');
+  expect(a).toBe(b);expect(a).not.toBe(c);expect(a).toMatch(/^[0-9a-f]{32}$/);expect(a).not.toContain('203');
+ });
+ it('counts only matching anonymous client attachments',()=>{
+  const socket=(clientKey:string)=>({deserializeAttachment:()=>({clientKey})}) as any;
+  expect(policy.socketCountForClient([socket('a'),socket('b'),socket('a')],'a')).toBe(2);
+ });
+ it('forwards only the anonymous client key on accepted upgrades',async()=>{
+  let routed:any;const env:any={WEB_ORIGIN:'https://doxomachy.flcrom.dev',MIND:{idFromName:()=>({}),get:()=>({fetch:(r:any)=>{routed=r;return new Response('{}')}})}};
+  const {worker}=await import('../src/index');await worker.fetch(new Request('https://api.example/v1/realtime',{headers:{Origin:env.WEB_ORIGIN,Upgrade:'websocket','CF-Connecting-IP':'203.0.113.9'}}),env);
+  expect(routed.headers.get('x-client-key')).toMatch(/^[0-9a-f]{32}$/);expect([...routed.headers.values()].join(' ')).not.toContain('203.0.113.9');
+ });
+});
+
+describe('diary read failure',()=>{
+ it('does not persist diary:null when legacy D1 is temporarily unavailable',async()=>{
+  const persisted:any={mind:{beliefs:[],cycle:2,version:4,sessions:{},issuance:{},idempotency:{}}};let writes=0;
+  const state:any={blockConcurrencyWhile:(fn:any)=>fn(),storage:{get:async(k:string)=>persisted[k],put:async()=>{writes++}},getWebSockets:()=>[]};
+  const env:any={DB:{prepare:()=>{throw new Error('temporary outage')}},AI:{}};const {Mind}=await import('../src/index');const mind=new Mind(state,env);await Promise.resolve();
+  const body:any=await (await mind.fetch(new Request('https://mind.internal/v1/mind'))).json();expect(body.diary).toBeNull();expect(writes).toBe(0);expect(persisted.mind.diary).toBeUndefined();
+ });
+});

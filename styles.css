@@ -38,4 +38,7 @@ textarea[aria-invalid="true"]{border-width:2px}
 /* Hero highlight: an inline span's background covers the full font box, which
    is taller than the tight .82 line and ran into "tokens." below. Giving the
    block its own box keeps the tight headline and leaves air under the black. */
-.hero h1 .inverse{display:inline-block;line-height:.9;padding:.03em .08em .1em;margin-bottom:.12em;vertical-align:baseline}
+/* Optical balance: the headline's -.07em letter-spacing trails after the last
+   0 and the 1 carries a wide left side bearing, so equal padding looked lopsided.
+   The extra right padding offsets both. */
+.hero h1 .inverse{display:inline-block;line-height:.9;padding:.03em .18em .1em .08em;margin-bottom:.12em;vertical-align:baseline}

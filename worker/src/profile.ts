@@ -94,11 +94,11 @@ async function sendReview(env: ProfileEnv, accountId: string, field: 'image' | '
   const url = `${base}/v1/review?t=${encodeURIComponent(token)}`;
   const esc = (s: string) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
   const who = name ? `"${name}"` : 'an account with no name';
-  const subject = field === 'image' ? `Doxomachy: review a profile image (${name || 'no name'})` : `Doxomachy: review a profile link (${name || 'no name'})`;
+  const subject = field === 'image' ? 'Doxomachy: new profile image to review' : 'Doxomachy: new profile link to review';
   const preview = field === 'link' ? `<p style="font-size:18px"><code>${esc(value)}</code></p><p>Do not open it unless you want to; approving makes it public on this account's beliefs.</p>` : `<p>The image is attached.</p>`;
-  const html = `<p>${esc(who)} wants to show this ${field} on their beliefs:</p>${preview}<p><a href="${esc(url)}">Review: approve or reject</a></p><p>It stays hidden until you approve it. The link expires in 30 days.</p>`;
+  const html = `<!doctype html><html lang="en"><body style="margin:0;padding:24px;font:16px/1.5 Arial,Helvetica,sans-serif;color:#111;background:#fff"><p>${esc(who)} wants to show this ${field} on their beliefs:</p>${preview}<p><a href="${esc(url)}">Review: approve or reject</a></p><p>It stays hidden until you approve it. The link expires in 30 days.</p></body></html>`;
   const text = `${who} wants to show this ${field} on their beliefs:\n\n${field === 'link' ? value : '(image attached)'}\n\nReview: ${url}\n\nIt stays hidden until you approve it.`;
-  const payload: any = { from: env.AUTH_FROM, to: [env.REVIEW_TO], subject, text, html };
+  const payload: any = { from: env.AUTH_FROM, to: [env.REVIEW_TO], subject, text, html, headers: { 'X-Entity-Ref-ID': crypto.randomUUID() } };
   if (field === 'image') {
     const m = value.match(IMAGE_RE)!;
     payload.attachments = [{ filename: `profile.${m[1] === 'jpeg' ? 'jpg' : m[1]}`, content: m[2] }];

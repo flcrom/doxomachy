@@ -200,15 +200,20 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }
 
+export const SUPPORT_EMAIL = 'support@flcrom.dev';
+
 export async function sendMagicLinkEmail(env: AuthEnv, to: string, link: string): Promise<boolean> {
   const safeLink = escapeHtml(link);
-  const text = `Use this link to sign in to Doxomachy within 15 minutes:\n\n${link}\n\nIf you did not ask for it, ignore this email.`;
-  const html = `<p>Use this link to sign in to Doxomachy within 15 minutes:</p><p><a href="${safeLink}">${safeLink}</a></p><p>If you did not ask for it, ignore this email.</p>`;
+  // Inbox placement: a real sentence around the link, a descriptive anchor
+  // (not a bare URL as the whole body), a matching plain-text part, and a
+  // reply-to people can actually write to.
+  const text = `Hi,\n\nSomeone (hopefully you) asked to sign in to Doxomachy with this email address. Open this link within 15 minutes to finish signing in:\n\n${link}\n\nThe link works once. If you did not ask for it, you can ignore this email and nothing will change.\n\nDoxomachy\nhttps://doxomachy.flcrom.dev`;
+  const html = `<!doctype html><html lang="en"><body style="margin:0;padding:24px;font:16px/1.5 Arial,Helvetica,sans-serif;color:#111;background:#fff"><p>Hi,</p><p>Someone (hopefully you) asked to sign in to Doxomachy with this email address. Open this link within 15 minutes to finish signing in:</p><p><a href="${safeLink}" style="color:#111;font-weight:bold">Sign in to Doxomachy</a></p><p style="font-size:13px;color:#555">If the button does not work, copy this address into your browser:<br>${safeLink}</p><p>The link works once. If you did not ask for it, you can ignore this email and nothing will change.</p><p>Doxomachy<br><a href="https://doxomachy.flcrom.dev" style="color:#555">doxomachy.flcrom.dev</a></p></body></html>`;
   try {
     const res = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: { authorization: `Bearer ${env.RESEND_API_KEY}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ from: env.AUTH_FROM, to: [to], subject: 'Your Doxomachy sign-in link', text, html })
+      body: JSON.stringify({ from: env.AUTH_FROM, to: [to], reply_to: SUPPORT_EMAIL, subject: 'Your Doxomachy sign-in link', text, html, headers: { 'X-Entity-Ref-ID': crypto.randomUUID() } })
     });
     return res.ok;
   } catch {

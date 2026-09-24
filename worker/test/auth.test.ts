@@ -81,7 +81,7 @@ let doCalls:any[];
 let doApplied:Set<string>;
 let doResponse:()=>Response;
 function makeEnv(db:MockD1,over:Record<string,any>={}):any{
- return {WEB_ORIGIN:ORIGIN,WEB_ORIGIN_EXTRA:'https://doxomachy.vercel.app',DIARY_MODEL:'m',RESEND_API_KEY:'re_test',AUTH_EMAIL_PEPPER:'test-pepper',AUTH_FROM:'Doxomachy <login@account.flcrom.dev>',DB:db,
+ return {WEB_ORIGIN:ORIGIN,WEB_ORIGIN_EXTRA:'https://doxomachy.vercel.app',DIARY_MODEL:'m',RESEND_API_KEY:'re_test',AUTH_EMAIL_PEPPER:'test-pepper',AUTH_FROM:'Doxomachy <login@doxomachy.flcrom.dev>',DB:db,
   MIND:{idFromName:()=>({}),get:()=>({fetch:async(input:any,init:any)=>{
    const req=new Request(input,init);
    if(new URL(req.url).pathname==='/internal/idempotency'){

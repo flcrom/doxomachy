@@ -29,10 +29,10 @@ import { runReconciliation } from './reconcile';
 import { requireAccount, type AuthEnv } from '../auth';
 
 export interface DodoEnv extends AuthEnv {
-  DODO_API_KEY?: string; // secret: wrangler secret put DODO_API_KEY (TEST-mode key)
+  DODO_API_KEY?: string; // secret: environment-matched key, set with wrangler secret put
   DODO_WEBHOOK_SECRET?: string; // secret: wrangler secret put DODO_WEBHOOK_SECRET (whsec_...)
   DODO_API_BASE?: string; // var: https://test.dodopayments.com while in test mode
-  DODO_PRODUCT_ID?: string; // var: TEST-mode product id for the $5 five-move pack
+  DODO_PRODUCT_ID?: string; // var: environment-matched product id for the $5 five-move pack
   DODO_RETURN_URL?: string; // var: where the buyer lands after checkout
   DODO_CHECKOUT_ENABLED?: string; // var: 'true' enables session creation; anything else keeps it off
   DODO_BUSINESS_ID?: string; // var: when set, webhooks/grants for any other business are rejected/quarantined
@@ -196,7 +196,7 @@ export const handleDodoWebhook = async (request: Request, env: DodoEnv): Promise
   }
 };
 
-/** Browser -> Worker. Create a test-mode checkout session for the five-move pack. */
+/** Browser -> Worker. Create a checkout session in the configured Dodo environment. */
 export const handleCheckoutSession = async (request: Request, env: DodoEnv): Promise<Response> => {
   // Hard gate. Paid checkout is deliberately disabled until the owner approves
   // seller identity, payout, refund terms and the exact USD offer.

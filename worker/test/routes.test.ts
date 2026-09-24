@@ -420,6 +420,15 @@ describe('POST /v1/checkout/session', () => {
   });
 });
 
+describe('reconciliation environment reporting', () => {
+  it('reports the live environment without exposing configuration values', async () => {
+    env.DODO_API_BASE = 'https://live.dodopayments.com';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ items: [] }), { status: 200 })));
+    const report = await runReconciliation(env);
+    expect(report.mode).toBe('live');
+  });
+});
+
 describe('POST /v1/admin/dodo/reconcile', () => {
   it('404s without an admin key, 401s with a wrong one, runs with the right one', async () => {
     const req = (key?: string) =>

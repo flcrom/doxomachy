@@ -48,11 +48,11 @@ const routeRequest=(request:Request,headers:Headers)=>{
 };
 
 export const worker = {
- async fetch(request:Request,env:Env){
+ async fetch(request:Request,env:Env,ctx?:ExecutionContext){
   const id=correlationId(request),started=Date.now(),path=new URL(request.url).pathname;
   const operation:Operation=path==='/ready'?'readiness':'http';
   try{
-   const response=await handleRequest(request,env,id);
+   const response=await handleRequest(request,env,id,ctx);
    const outcome:Outcome=response.status>=500?'error':response.status>=400?'degraded':'ok';
    logEvent({operation,outcome,correlationId:id,status:response.status,route:routeTemplate(path),method:request.method,durationMs:Date.now()-started,...(response.status>=400?{reason:`http_${response.status}`}:{})});
    return withCorrelation(response,id);
@@ -93,7 +93,7 @@ export const worker = {
 };
 export default worker;
 
-async function handleRequest(request:Request,env:Env,id:string):Promise<Response>{
+async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionContext):Promise<Response>{
   const origin=request.headers.get('Origin')||'';
   const origins=allowedOrigins(env);
   if(origin&&!origins.has(origin))return json({error:'origin_not_allowed'},403);
@@ -103,7 +103,7 @@ async function handleRequest(request:Request,env:Env,id:string):Promise<Response
   }
   const url=new URL(request.url);
   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'doxomachy-api'},200,origin||undefined);
-  // Dodo Payments (test mode). The webhook is server-to-server and authenticates by
+  // Dodo Payments. The webhook is server-to-server and authenticates by
   // Standard Webhooks signature, not Origin/CORS; Dodo sends no Origin header, so it
   // passes the origin check above. Webhook bodies can exceed the 2KB browser limit,
   // so this route sits before MAX_BODY; the handler enforces a 32KB ACTUAL-BYTE cap.
@@ -142,7 +142,29 @@ async function handleRequest(request:Request,env:Env,id:string):Promise<Response
    if(authResponse)return authResponse;
   }
   if(url.pathname==='/v1/session'&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
-  if(url.pathname==='/v1/mind'&&request.method==='GET')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
+  if(url.pathname==='/v1/mind'&&request.method==='GET'){
+   // Anonymous public reads are byte-identical for everyone (no session, no
+   // moves), so they are served from the per-POP Cache API with a ~2s TTL
+   // instead of spending a Durable Object request on every read. This is the
+   // Free-plan-safe offload: enabling R2 requires a payment method on file;
+   // caches.default does not. Authenticated reads (remaining moves) and all
+   // mutations still hit the authoritative Durable Object.
+   const edge=typeof caches!=='undefined'?caches.default:null;
+   if(!auth.startsWith('Bearer ')&&edge){
+    const key=new Request('https://doxomachy-cache.internal/v1/public-mind',{method:'GET'});
+    const hit=await edge.match(key);
+    if(hit){const hitHeaders=new Headers(hit.headers);hitHeaders.set('x-doxomachy-cache','hit');return addCors(new Response(hit.body,{status:hit.status,headers:hitHeaders}),origin)}
+    const authoritative=await mindStub(env).fetch(routeRequest(request,forwarded));
+    if(!authoritative.ok)return addCors(authoritative,origin);
+    const body:any=await authoritative.json().catch(()=>null);
+    if(!body||typeof body!=='object')return json({error:'bad_response'},502,origin||undefined);
+    delete body.moves; // never cache per-session state
+    const cacheable=new Response(JSON.stringify(body),{status:200,headers:{...securityHeaders,'cache-control':'public, max-age=2','x-doxomachy-cache':'miss'}});
+    try{const stored=cacheable.clone();if(ctx&&ctx.waitUntil)ctx.waitUntil(edge.put(key,stored));else await edge.put(key,stored)}catch{}
+    return addCors(cacheable,origin);
+   }
+   return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
+  }
   if(url.pathname==='/v1/realtime'&&request.method==='GET'){
    if(!origin||!origins.has(origin))return json({error:'origin_not_allowed'},403);
    if(request.headers.get('Upgrade')?.toLowerCase()!=='websocket')return json({error:'upgrade_required'},426,origin);

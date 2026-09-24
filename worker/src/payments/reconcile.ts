@@ -45,7 +45,7 @@ export interface ReconcileEnv {
 
 export interface ReconcileReport {
   checked_at: number;
-  mode: 'test' | 'unknown';
+  mode: 'test' | 'live' | 'unknown';
   upstream: { payments: number; refunds: number; disputes: number } | 'not_configured';
   truncated: string[]; // list sources that hit the page cap: reconcile result is incomplete
   orders_recovered: number;
@@ -86,7 +86,7 @@ export const runReconciliation = async (env: ReconcileEnv, fetchImpl: typeof fet
   const store = new D1FulfillmentStore(env.DB);
   const report: ReconcileReport = {
     checked_at: at,
-    mode: env.DODO_API_BASE?.includes('test.dodopayments.com') ? 'test' : 'unknown',
+    mode: env.DODO_API_BASE?.includes('test.dodopayments.com') ? 'test' : env.DODO_API_BASE?.includes('live.dodopayments.com') ? 'live' : 'unknown',
     upstream: 'not_configured',
     truncated: [],
     orders_recovered: 0,

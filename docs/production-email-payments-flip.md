@@ -59,7 +59,7 @@ Auth fails closed with `503 auth_not_configured` unless the database, `RESEND_AP
 2. Request a link for a real inbox through `POST /v1/auth/magic-link` from the production origin.
 3. Confirm the message's From address is `Doxomachy <login@doxomachy.flcrom.dev>` and the link begins with `https://doxomachy.flcrom.dev/callback.html#token=`.
 4. Confirm the link works once, expires after 15 minutes, and replay fails.
-5. Confirm sign-out, sign-out-all, and a second-device sign-in.
+5. Confirm sign-out and a second-device sign-in (there is no sign-out-all).
 6. Check inbox and spam placement. Never copy a live magic-link token into logs or tickets.
 
 ## 3. Dodo production setup
@@ -125,6 +125,7 @@ Test-mode keys, product IDs, webhook secrets, and data do not work in live mode.
    Do not place the operator key in shell history on a shared machine. Prefer reading it from the vault into the process environment.
 5. Confirm production auth works. Checkout requires an authenticated account session.
 6. Confirm the pricing page and checkout button are ready for the live route. The backend being enabled does not by itself change a frontend still presenting free-launch mode.
+7. The buy button must sit behind an unticked checkbox the buyer ticks before checkout opens, worded: "I agree that my credits are delivered immediately and I understand that I lose my right of withdrawal once they are delivered. All sales are final." Keep the button disabled until it is ticked. This is the EU/UK express consent and acknowledgement for digital content (Consumer Rights Directive 2011/83/EU, Article 16(m)); the Refund & Cancellation Policy says buyers give it before paying.
 
 ### Enable and canary
 

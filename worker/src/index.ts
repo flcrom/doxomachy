@@ -277,6 +277,21 @@ function addCors(response:Response,origin:string){const h=new Headers(response.h
 function counterOk(counter:Counter|undefined,limit:number,windowMs:number,now:number):[boolean,Counter]{const c=!counter||now-counter.window>=windowMs?{count:0,window:now}:counter;c.count++;return [c.count<=limit,c]}
 function parseJsonBody(contentType:string,text:string){if(!contentType.toLowerCase().startsWith('application/json'))throw new Error('content_type');if(new TextEncoder().encode(text).byteLength>MAX_BODY)throw new Error('too_large');return JSON.parse(text)}
 
+// Idempotency records live inside the single 'mind' storage value for 7
+// days. Storing the full belief list in each one made that value grow with
+// every paid move until it passed the storage size limit and every write
+// failed (SQLITE_TOOBIG after ~300 moves on staging). Records keep only the
+// move's own result; a replay fills in the current belief list.
+function slimIdempotent(v:Idempotent):Idempotent{
+ const body:any=v.body;
+ if(body&&body.mind&&Array.isArray(body.mind.beliefs))v.body={...body,mind:{cycle:body.mind.cycle,version:body.mind.version}};
+ return v;
+}
+function replayBody(v:Idempotent,m:MindState):unknown{
+ const body:any=v.body;
+ return body&&body.mind?{...body,mind:{...body.mind,beliefs:m.beliefs.map(publicBelief)}}:body;
+}
+
 export class Mind {
  private cache:MindState|null=null;
  private diaryRow:unknown=null;
@@ -342,7 +357,7 @@ export class Mind {
   // Idempotency records outlive the longest verifiable pending spend
   // (PAID_SPEND_RECONCILE_MAX_MS is 6 days); beyond that reconciliation
   // refuses to refund blind.
-  for(const [k,v] of Object.entries(m.idempotency))if(now-v.createdAt>7*DAY)delete m.idempotency[k];
+  for(const [k,v] of Object.entries(m.idempotency))if(now-v.createdAt>7*DAY)delete m.idempotency[k];else slimIdempotent(v); // older records held a full mind copy each
   for(const [k,v] of Object.entries(m.issuance))if(now-v.window>60*60_000)delete m.issuance[k];
  }
  // Reads the diary row D1 already holds for a UTC day plus the highest cycle
@@ -552,7 +567,7 @@ export class Mind {
    const token=request.headers.get('x-session-id')||'';
    if(!paid||!token.startsWith('paid:'))return json({error:'account_required'},401);
    const idem=clean(request.headers.get('idempotency-key'),100);if(!/^[A-Za-z0-9_-]{16,100}$/.test(idem))return json({error:'idempotency_key_required'},400);
-   const idemKey=token+':'+idem;if(m.idempotency[idemKey]){const hit=m.idempotency[idemKey];return json(hit.body,hit.status)}
+   const idemKey=token+':'+idem;if(m.idempotency[idemKey]){const hit=m.idempotency[idemKey];return json(replayBody(hit,m),hit.status)}
    if(url.pathname==='/v1/beliefs'){
     let body:any;try{body=parseJsonBody(request.headers.get('content-type')||'',bodyText)}catch(e:any){return json({error:e.message==='too_large'?'payload_too_large':'invalid_json'},e.message==='too_large'?413:400)}
     const text=clean(body?.text),alias=clean(body?.alias||'anonymous',20);
@@ -564,11 +579,11 @@ export class Mind {
     const plan=planEviction(m.beliefs,belief,this.env.PROTECT_NEW_UNTIL_DIARY==='true'?lastDiaryCutoff(now):null);
     if(!plan)return json({error:'mind_full_until_diary'},409);
     m.beliefs=plan.kept;const evicted=plan.evicted;
-    m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(belief),evicted:evicted.map(publicBelief),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);
+    m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(belief),evicted:evicted.map(publicBelief),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]=slimIdempotent({status:201,body:bodyOut,createdAt:now});await this.save(m);
     if(evicted.length)logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'capacity_eviction',gauges:{evicted:evicted.length,tokens_used:m.beliefs.reduce((n,b)=>n+b.tokens,0)}});
     this.repairSnapshot(m,id);this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);(b.shieldTimes||=[]).push(now);b.shields=1+b.shieldTimes.length;m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(b),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);this.broadcast(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);(b.shieldTimes||=[]).push(now);b.shields=1+b.shieldTimes.length;m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(b),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]=slimIdempotent({status:200,body:bodyOut,createdAt:now});await this.save(m);this.repairSnapshot(m,id);this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   },id);
  }

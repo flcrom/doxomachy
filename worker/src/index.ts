@@ -18,7 +18,7 @@ type MindState={beliefs:Belief[];cycle:number;version?:number;diary?:unknown;dia
 
 const DIARY_MAX_ATTEMPTS=48; // ~2 days of hourly retries before a day is parked
 const PROFILE_MAX_BODY=160_000, MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200, MAX_SOCKETS_PER_CLIENT=20;
-const QUEUE_WARN=10, MUTATION_WARN_MS=500;
+const QUEUE_WARN=10, MUTATION_WARN_MS=500, BROADCAST_MS=250;
 const securityHeaders={
  'content-type':'application/json; charset=utf-8','x-content-type-options':'nosniff','x-frame-options':'DENY',
  'referrer-policy':'no-referrer','permissions-policy':'camera=(), microphone=(), geolocation=()',
@@ -299,9 +299,26 @@ export class Mind {
   this.snapshotQueue=this.snapshotQueue.then(async()=>{const result=await publishIfNewer(this.env,snapshot);const lag=await snapshotLag(this.env,snapshot.version);logEvent({operation:'durable_object',outcome:result==='failed'?'degraded':'ok',correlationId:id,reason:'snapshot_'+result,durationMs:Date.now()-started,gauges:{snapshot_version:snapshot.version,snapshot_lag:lag.lag??-1}})}).catch(()=>{});
   this.state.waitUntil?.(this.snapshotQueue);
  }
- private async broadcast(m:MindState){
-  await this.ensureDiary(m);const payload=JSON.stringify(this.publicState(m));
-  for(const socket of this.state.getWebSockets())try{socket.send(payload)}catch{try{socket.close(1011,'send failed')}catch{}}
+ // Broadcasts are coalesced: a write only records the newest state and arms
+ // one timer, so sockets get at most one full snapshot per BROADCAST_MS and
+ // it is always the latest. The writer queue never waits on the fan-out.
+ private broadcastLatest:MindState|null=null;
+ private broadcastTimer:ReturnType<typeof setTimeout>|null=null;
+ private lastBroadcastAt=0;
+ private broadcast(m:MindState):void{
+  this.broadcastLatest=m;
+  if(this.broadcastTimer)return;
+  const wait=Math.max(0,BROADCAST_MS-(Date.now()-this.lastBroadcastAt));
+  this.broadcastTimer=setTimeout(()=>{void this.flushBroadcast()},wait);
+ }
+ private async flushBroadcast(){
+  this.broadcastTimer=null;const m=this.broadcastLatest;this.broadcastLatest=null;
+  if(!m)return;
+  this.lastBroadcastAt=Date.now();
+  try{
+   await this.ensureDiary(m);const payload=JSON.stringify(this.publicState(m));
+   for(const socket of this.state.getWebSockets())try{socket.send(payload)}catch{try{socket.close(1011,'send failed')}catch{}}
+  }catch(e){logEvent({operation:'durable_object',outcome:'degraded',correlationId:crypto.randomUUID(),reason:'broadcast_failed'})}
  }
  private save(m:MindState){return this.state.storage.put('mind',m)}
  private enqueue<T>(task:()=>Promise<T>,id=crypto.randomUUID()):Promise<T>{
@@ -355,7 +372,7 @@ export class Mind {
    logEvent({operation:'durable_object',outcome:'error',correlationId:id,reason:'diary_state_save_failed'});
    return json({error:'diary_state_save_failed'},500);
   }
-  this.diaryRow=found.row;this.diaryLoaded=true;this.repairSnapshot(m,id);await this.broadcast(m);
+  this.diaryRow=found.row;this.diaryLoaded=true;this.repairSnapshot(m,id);this.broadcast(m);
   logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'diary_reconciled'});
   return json({written:false,reason:'already_written',reconciled:true});
  }
@@ -415,7 +432,7 @@ export class Mind {
    const r:DiaryRow={cycle,text,belief_ids:beliefIds,model:this.env.DIARY_MODEL,created_at:created};
    m.cycle=n+1;m.version=(m.version||0)+1;m.diary=r;
    try{await this.save(m)}catch{this.cache=null;this.diaryLoaded=false;logEvent({operation:'durable_object',outcome:'error',correlationId:id,reason:'diary_state_save_failed'});return json({error:'diary_state_save_failed'},500)}
-   this.diaryRow=r;this.diaryLoaded=true;this.repairSnapshot(m,id);await this.broadcast(m);
+   this.diaryRow=r;this.diaryLoaded=true;this.repairSnapshot(m,id);this.broadcast(m);
    logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'diary_backfilled'});
    return json({written:true,cycle});
   },id);
@@ -479,7 +496,7 @@ export class Mind {
     logEvent({operation:'durable_object',outcome:'error',correlationId:id,reason:'diary_state_save_failed'});
     return json({error:'diary_state_save_failed'},500);
    }
-   this.diaryRow=row;this.diaryLoaded=true;this.repairSnapshot(m2,id);await this.broadcast(m2);
+   this.diaryRow=row;this.diaryLoaded=true;this.repairSnapshot(m2,id);this.broadcast(m2);
    logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'diary_written',gauges:{beliefs:m2.beliefs.length}});
    return json({written:true,cycle,text,createdAt:created,version:m2.version});
   },id);
@@ -541,9 +558,9 @@ export class Mind {
     m.beliefs=plan.kept;const evicted=plan.evicted;
     m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(belief),evicted:evicted.map(publicBelief),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);
     if(evicted.length)logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'capacity_eviction',gauges:{evicted:evicted.length,tokens_used:m.beliefs.reduce((n,b)=>n+b.tokens,0)}});
-    this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut,201);
+    this.repairSnapshot(m,id);this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);(b.shieldTimes||=[]).push(now);b.shields=1+b.shieldTimes.length;m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(b),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);(b.shieldTimes||=[]).push(now);b.shields=1+b.shieldTimes.length;m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(b),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   },id);
  }

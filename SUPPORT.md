@@ -1,6 +1,6 @@
 # Support and content takedowns
 
-Email **vardhman.47th@gmail.com** for product support, abuse reports, privacy requests, or a request to remove public content.
+Email **support@flcrom.dev** for product support, abuse reports, privacy requests, or a request to remove public content.
 
 Include:
 - the belief ID or exact text;

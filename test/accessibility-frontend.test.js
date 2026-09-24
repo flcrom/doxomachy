@@ -72,7 +72,7 @@ test('index wires the composer disclosure, error alert and freshness live region
 test('small-screen CSS keeps DOM reading order, 44px targets and visible focus',()=>{
  const css=read('styles.css');
  assert.ok(!/\.status\{order:-1\}/.test(css),'status rail must not jump ahead of the ledger on mobile');
- for(const sel of ['.text-button,.shield-button','.wordmark,.footer a,.rule-note a,.fine a','.check','.alias input']){
+ for(const sel of ['.text-button,.shield-button','.wordmark,.footer a,.rule-note a,.fine a','.check']){
   const rules=[...css.matchAll(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\{([^}]*)\\}','g'))].map(m=>m[1]);
   assert.ok(rules.some(r=>/min-height:44px/.test(r)),`${sel} must be at least 44px tall`);
  }

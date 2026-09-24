@@ -1,5 +1,6 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {worker,Mind} from '../src/index';
+import {profileSql} from '../src/profile';
 import {authSql,AUTH_LINK_TTL_MS,AUTH_SESSION_TTL_MS,AUTH_RATE_LIMIT_IP,allowedOrigins,isValidTokenFormat,normalizeEmail,pepperId,randomToken,reconcileAccountSpends,refundAccountCredit,resolveOrigin,settleAccountSpend,spendAccountCredit,validOrigin} from '../src/auth';
 
 const ORIGIN='https://doxomachy.flcrom.dev';
@@ -53,6 +54,7 @@ class MockD1{
    case authSql.deleteAccountSpendMeta:{let n=0;for(const [k,r] of this.spends)if(r.account_id===p[0]&&this.meta.delete(k))n++;return ch(n)}
    case authSql.deleteAccountFreeShields:{return ch(this.freeUsed.delete(p[0])?1:0)}
    case authSql.deleteAccountIntents:{const n=this.intents.length;this.intents=this.intents.filter(r=>r.account_id!==p[0]);return ch(n-this.intents.length)}
+   case authSql.deleteAccountProfile:{return ch(0)}
    case authSql.tombstoneAccount:{const r=this.accounts.find(a=>a.id===p[0]);if(r){r.email_hmac='deleted:'+r.id;r.pepper_id='';return ch(1)}return ch(0)}
    case authSql.paidSpendClaim:{const r=this.spends.get(p[3]);if(r&&r.status==='pending'){r.status=p[0];r.resolved_at=p[1];r.resolver=p[2];return ch(1)}return ch(0)}
    case authSql.paidSpendRefundGuarded:{const r=this.spends.get(p[3]);const m=this.meta.get(p[0]);if(r&&r.resolver===p[4]&&m?.kind!=='free_shield'){this.credits.set(p[2],(this.credits.get(p[2])||0)+(m?.amount??1));return ch(1)}return ch(0)}
@@ -65,6 +67,7 @@ class MockD1{
  }
  one(sql:string,p:any[]){
   switch(sql){
+   case profileSql.select:{return null}
    case authSql.accountSelect:{const r=this.accounts.find(a=>a.email_hmac===p[0]);return r?{id:r.id}:null}
    case authSql.linkAccount:{const r=this.links.find(x=>x.token_hash===p[0]);return r?{account_id:r.account_id}:null}
    case authSql.sessionSelect:{const r=this.sessions.find(x=>x.token_hash===p[0]&&x.revoked_at===null&&x.expires_at>p[1]);return r?{account_id:r.account_id,expires_at:r.expires_at}:null}

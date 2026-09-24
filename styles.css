@@ -42,3 +42,5 @@ textarea[aria-invalid="true"]{border-width:2px}
    0 and the 1 carries a wide left side bearing, so equal padding looked lopsided.
    The extra right padding offsets both. */
 .hero h1 .inverse{display:inline-block;line-height:.9;padding:.03em .18em .1em .08em;margin-bottom:.12em;vertical-align:baseline}
+.meta .avatar{width:18px;height:18px;object-fit:cover;vertical-align:-4px;margin-right:6px;border-radius:50%}.meta .by{color:var(--ink);font-weight:700}.meta .by-link{color:inherit}
+.profile-form{margin:32px 0;max-width:520px;border-top:1px solid var(--soft);padding-top:24px}.profile-title{margin:0 0 16px;font-size:18px;letter-spacing:-.03em}.profile-form .alias{margin-top:16px}.profile-form input[type=url],.profile-form input[type=file]{display:block;margin-top:7px;width:100%;max-width:360px;border:0;border-bottom:1px solid var(--ink);background:transparent;padding:8px 0;font:15px var(--sans);border-radius:0}.profile-form .alias input{width:100%;max-width:360px}

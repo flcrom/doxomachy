@@ -24,7 +24,7 @@ describe('migration directory safety (rollback must never forward-migrate)', () 
       const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
       expect(sql, `${file} must be a pure forward migration`).not.toMatch(/\bDROP\s+(TABLE|TRIGGER|INDEX|VIEW)\b/i);
     }
-    expect(discovered).toEqual(['0001.sql', '0002.sql', '0002_dodo_payments.sql', '0003_dodo_disputes.sql', '0004_diary_sources.sql', '0005_account_model.sql']);
+    expect(discovered).toEqual(['0001.sql', '0002.sql', '0002_dodo_payments.sql', '0003_dodo_disputes.sql', '0004_diary_sources.sql', '0005_account_model.sql', '0006_profiles.sql']);
   });
 
   it('applying the discovered set in order, then re-applying it, preserves seeded auth data', () => {

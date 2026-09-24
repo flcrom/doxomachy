@@ -2,12 +2,13 @@ import llama3Tokenizer from 'llama3-tokenizer-js';
 import {correlationId,logEvent,routeTemplate,withCorrelation,Operation,Outcome} from './observability';
 import {makePublicSnapshot,publishIfNewer,snapshotLag} from './public-snapshot';
 import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, refundAccountCredit, requireAccount, settleAccountSpend, spendAccountMove, accountBalances, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
+import { handleProfile, publicIdentity } from './profile';
 import { handleDodoWebhook, handleCheckoutSession, handleDodoReconcile } from './payments/routes';
 
-export interface Env { BELIEF_CREDIT_COST?: string; SHIELD_CREDIT_COST?: string; FREE_SHIELDS?: string; PROTECT_NEW_UNTIL_DIARY?: string; SHIELD_DECAY?: string; MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
+export interface Env { REVIEW_TO?: string; API_ORIGIN?: string; BELIEF_CREDIT_COST?: string; SHIELD_CREDIT_COST?: string; FREE_SHIELDS?: string; PROTECT_NEW_UNTIL_DIARY?: string; SHIELD_DECAY?: string; MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
 // shields = 1 (the belief itself) + shields added in the last SHIELD_TTL.
 // shieldTimes holds when each added shield was placed; it never leaves the DO.
-type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number;shieldTimes?:number[]};
+type Belief={id:string;text:string;alias:string;publicId?:string;shields:number;createdAt:number;tokens:number;shieldTimes?:number[]};
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
 type Idempotent={status:number;body:unknown;createdAt:number};
@@ -16,7 +17,7 @@ type DiaryRow={cycle:string;text:string;belief_ids:string;model:string;created_a
 type MindState={beliefs:Belief[];cycle:number;version?:number;diary?:unknown;diaryDate?:string;sessions:Record<string,Session>;issuance:Record<string,Counter>;idempotency:Record<string,Idempotent>};
 
 const DIARY_MAX_ATTEMPTS=48; // ~2 days of hourly retries before a day is parked
-const MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200, MAX_SOCKETS_PER_CLIENT=20;
+const PROFILE_MAX_BODY=160_000, MAX_BODY=2048, DAY=86_400_000, SESSION_TTL=7*DAY, BURST_MS=60_000, MAX_SOCKETS=1200, MAX_SOCKETS_PER_CLIENT=20;
 const QUEUE_WARN=10, MUTATION_WARN_MS=500;
 const securityHeaders={
  'content-type':'application/json; charset=utf-8','x-content-type-options':'nosniff','x-frame-options':'DENY',
@@ -37,7 +38,7 @@ function dayWindow(dayKey:string):[number,number]|null{
  if(!Number.isSafeInteger(start)||utcDay(start)!==dayKey)return null;
  return [start,start+DAY];
 }
-// Move prices in credits (configuration; the owner's pricing answer is pending).
+// Move prices in credits (configuration).
 const creditCost=(raw:string|undefined,fallback:number)=>{const n=Number(raw);return Number.isSafeInteger(n)&&n>=1&&n<=1000?n:fallback};
 export const moveCosts=(env:Env)=>({belief:creditCost(env.BELIEF_CREDIT_COST,2),shield:creditCost(env.SHIELD_CREDIT_COST,1)});
 // Capacity eviction: fewest shields first, oldest first on ties. With a
@@ -130,11 +131,14 @@ export default worker;
 
 async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionContext):Promise<Response>{
   const origin=request.headers.get('Origin')||'';
+  // The review page (see profile.ts) posts back to itself on the API origin; it is
+  // authorized by its signed token, not by a browser origin.
+  if(new URL(request.url).pathname==='/v1/review'){const r=await handleProfile(request,env,undefined,json);if(r)return r}
   const origins=allowedOrigins(env);
   if(origin&&!origins.has(origin))return json({error:'origin_not_allowed'},403);
   if(request.method==='OPTIONS'){
    if(!origins.has(origin))return json({error:'origin_not_allowed'},403);
-   return new Response(null,{status:204,headers:{...headers(origin),'access-control-allow-methods':'GET,POST,DELETE,OPTIONS','access-control-allow-headers':'content-type, authorization, idempotency-key, x-correlation-id','access-control-expose-headers':'x-correlation-id, x-account-credits','access-control-max-age':'600'}});
+   return new Response(null,{status:204,headers:{...headers(origin),'access-control-allow-methods':'GET,POST,PUT,DELETE,OPTIONS','access-control-allow-headers':'content-type, authorization, idempotency-key, x-correlation-id','access-control-expose-headers':'x-correlation-id, x-account-credits','access-control-max-age':'600'}});
   }
   const url=new URL(request.url);
   if(url.pathname==='/health'&&request.method==='GET')return json({ok:true,service:'doxomachy-api'},200,origin||undefined);
@@ -151,6 +155,10 @@ async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionCon
   // Ops-only reconciliation job. 404s unless DODO_ADMIN_KEY is configured.
   if(url.pathname==='/v1/admin/dodo/reconcile'&&request.method==='POST')return addCors(await handleDodoReconcile(request,env),'');
   if(url.pathname==='/ready'&&request.method==='GET')return readiness(env,origin||undefined,id);
+  if(url.pathname==='/v1/profile'||url.pathname==='/v1/profiles'||url.pathname.startsWith('/v1/profile-image/')){
+   if(request.method==='PUT'&&Number(request.headers.get('content-length')||0)>PROFILE_MAX_BODY)return json({error:'payload_too_large'},413,origin||undefined);
+   const r=await handleProfile(request,env,origin||undefined,json);if(r)return r;
+  }
   if(request.method==='POST'&&Number(request.headers.get('content-length')||0)>MAX_BODY)return json({error:'payload_too_large'},413,origin||undefined);
   // Browser payment routes require a browser Origin (no anonymous curl calls) and
   // an authenticated account session (checked inside the handlers); the caller's
@@ -223,7 +231,17 @@ async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionCon
    forwarded.set('x-paid-move','1');
    forwarded.set('x-session-id','paid:'+account.accountId);
    forwarded.set('idempotency-key',paidIdem);
-   const paidResponse=await mindStub(env).fetch(routeRequest(request,forwarded));
+   let toMind=routeRequest(request,forwarded);
+   if(move==='belief'){
+    // Identity comes from the account's profile, never from the client: a
+    // belief shows the profile name (and approved image/link) unless the
+    // author posts it anonymously.
+    let body:any={};try{body=JSON.parse(await request.text())}catch{}
+    const identity=body?.anonymous===true?null:await publicIdentity(env,account.accountId);
+    forwarded.set('content-type','application/json');
+    toMind=new Request(request.url,{method:'POST',headers:forwarded,body:JSON.stringify({text:body?.text,alias:identity?identity.name:'anonymous',publicId:identity?.publicId})});
+   }
+   const paidResponse=await mindStub(env).fetch(toMind);
    if(paidResponse.status>=400){if(!spend.replay)await refundAccountCredit(env,account.accountId,paidIdem,Date.now(),id)}
    else await settleAccountSpend(env,account.accountId,paidIdem,'spent',Date.now(),id);
    const out=addCors(paidResponse,origin);
@@ -516,7 +534,8 @@ export class Mind {
     if(text.length<8||text.length>120)return json({error:'invalid_belief'},400);
     if(unsafeInput(text)||unsafeInput(alias)){logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'moderation_rejected'});return json({error:'invalid_belief'},400)}
     const tokens=llama3Tokenizer.encode(text,{bos:false,eos:false}).length;if(tokens>1000)return json({error:'belief_too_large'},400);
-    const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',shields:1,createdAt:now,tokens,shieldTimes:[]};
+    const publicId=typeof body?.publicId==='string'&&/^[0-9a-f]{32}$/.test(body.publicId)?body.publicId:undefined;
+    const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',...(publicId?{publicId}:{}),shields:1,createdAt:now,tokens,shieldTimes:[]};
     const plan=planEviction(m.beliefs,belief,this.env.PROTECT_NEW_UNTIL_DIARY==='true'?lastDiaryCutoff(now):null);
     if(!plan)return json({error:'mind_full_until_diary'},409);
     m.beliefs=plan.kept;const evicted=plan.evicted;

@@ -41,6 +41,7 @@ SHIELD_CREDIT_COST = "1"
 FREE_SHIELDS = "3"            # per account, spent before credits on shields
 PROTECT_NEW_UNTIL_DIARY = "true" # a new belief cannot be evicted before the next 00:30 UTC diary
 SHIELD_DECAY = "true"         # each added shield lasts 7 days
+REVIEW_TO = "review@flcrom.dev" # profile images and links are emailed here for approval
 
 # Auth configuration (magic-link sign-in):
 #   AUTH_FROM                 - verified sender on doxomachy.flcrom.dev (committed above as a var)

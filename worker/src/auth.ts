@@ -90,6 +90,7 @@ export const authSql = {
   deleteAccountSpends: 'DELETE FROM paid_spends WHERE account_id = ?',
   deleteAccountFreeShields: 'DELETE FROM account_free_shields WHERE account_id = ?',
   deleteAccountIntents: 'DELETE FROM checkout_intents WHERE account_id = ?',
+  deleteAccountProfile: 'DELETE FROM account_profiles WHERE account_id = ?',
   // Tombstone instead of DELETE: dodo_orders keeps its FK to the row, and the
   // email lookup hash (the only link to a person) is overwritten.
   tombstoneAccount: "UPDATE accounts SET email_hmac = 'deleted:' || id, pepper_id = '' WHERE id = ?",
@@ -491,6 +492,7 @@ export async function handleAuth(request: Request, env: AuthEnv, origin: string 
       env.DB.prepare(authSql.deleteAccountRates).bind(`email:${row?.email_hmac || ''}`),
       env.DB.prepare(authSql.deleteAccountFreeShields).bind(account.accountId),
       env.DB.prepare(authSql.deleteAccountIntents).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountProfile).bind(account.accountId),
       env.DB.prepare(authSql.creditDelete).bind(account.accountId, balance),
       env.DB.prepare(authSql.tombstoneAccount).bind(account.accountId)
     ]);

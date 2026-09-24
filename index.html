@@ -39,10 +39,11 @@
         <textarea id="beliefText" name="belief" maxlength="120" required enterkeyhint="send" aria-describedby="composerHint charCount composerError" placeholder="Write one clear sentence."></textarea>
         <p id="composerHint" class="fine composer-hint">One line. Enter adds the belief. Esc closes the form.</p>
         <div class="form-row">
-          <label class="alias">Alias <input id="alias" name="alias" maxlength="20" placeholder="anonymous" /></label>
+          <label class="check anon"><input id="anonymous" type="checkbox" /> Post anonymously</label>
           <span id="charCount">0 / 120</span>
         </div>
         <label class="check"><input id="publicAck" type="checkbox" required /> I understand this will be public.</label>
+        <p class="fine">Shown with your <a href="/account.html">profile</a> name unless you post anonymously.</p>
         <p id="composerError" class="composer-error" role="alert"></p>
         <div id="evictionPreview" class="eviction-preview" aria-live="polite"></div>
         <button class="primary" type="submit">Add belief · 2 credits</button>

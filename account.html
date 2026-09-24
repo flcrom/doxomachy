@@ -49,6 +49,18 @@
         <button class="text-button" id="signOut" type="button">Sign out this device</button>
         <button class="text-button auth-danger" id="deleteAccount" type="button">Delete account</button>
       </div>
+      <form id="profileForm" class="profile-form" aria-labelledby="profile-title">
+        <h3 id="profile-title" class="profile-title">Public profile <span class="fine">optional</span></h3>
+        <label class="alias">Name <input id="profileName" name="name" maxlength="24" pattern="[A-Za-z0-9-]{1,24}" placeholder="anonymous" autocomplete="nickname" aria-describedby="nameHint" /></label>
+        <p id="nameHint" class="fine">Letters, numbers and dashes. Shows on your beliefs right away.</p>
+        <label class="alias">Link <input id="profileLink" name="link" type="url" maxlength="300" placeholder="https://" aria-describedby="linkState" /></label>
+        <p id="linkState" class="fine"></p>
+        <label class="alias">Image <input id="profileImage" name="image" type="file" accept="image/png,image/jpeg,image/webp" aria-describedby="imageState" /></label>
+        <p id="imageState" class="fine"></p>
+        <p class="fine">Links and images are reviewed by hand and stay hidden until approved.</p>
+        <div class="auth-actions"><button class="primary" type="submit">Save profile</button> <button class="text-button" id="clearImage" type="button" hidden>Remove image</button></div>
+        <p id="profileStatus" class="eviction-preview" role="status" aria-live="polite"></p>
+      </form>
       <p class="fine">A belief costs 2 credits; a shield uses a free shield first, then 1 credit. Refunds are handled by email. Deleting your account gives up any unused credits.</p>
       <p id="sessionStatus" class="eviction-preview" role="status" aria-live="polite"></p>
     </section>

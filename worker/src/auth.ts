@@ -11,8 +11,8 @@ import { logEvent } from './observability';
 // keeps its own 30-day session. The only bulk revocation is the explicit
 // sign-out-all call, which revokes every live session of the account.
 
-export const AUTH_LINK_TTL_MS = 15 * 60_000;          // approved default: 15-minute links
-export const AUTH_SESSION_TTL_MS = 30 * 86_400_000;   // approved default: 30-day sessions
+export const AUTH_LINK_TTL_MS = 15 * 60_000;          // proposed default: 15-minute links (owner answer pending)
+export const AUTH_SESSION_TTL_MS = 30 * 86_400_000;   // proposed default: 30-day sessions (owner answer pending)
 export const AUTH_RATE_LIMIT_EMAIL = 5;               // per-hour cap per email address
 export const AUTH_RATE_LIMIT_IP = 60;                 // per-hour backstop per source IP; generous so NAT/campus networks are not locked out
 export const AUTH_RATE_WINDOW_MS = 3_600_000;

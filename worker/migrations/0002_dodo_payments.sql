@@ -16,7 +16,7 @@
 -- account_sessions is OWNED BY THE AUTH LANE (its migration); not declared
 -- here. 0001 `webhook_events` is superseded by webhook_inbox and untouched.
 --
--- rev 4 ownership FKs (deliberate policy, OWNER-CONFIRMED 2026-09-21): apply AFTER the auth migration
+-- rev 4 ownership FKs (proposed policy; owner confirmation PENDING - no sign-off on record): apply AFTER the auth migration
 -- (0002.sql creates accounts; filename sort guarantees order).
 --  - dodo_orders.account_id    REFERENCES accounts(id), default NO ACTION
 --    (= RESTRICT): financial history blocks account deletion at the DB

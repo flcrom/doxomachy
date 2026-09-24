@@ -54,7 +54,7 @@ const checkoutRequest = (init: { token?: string; key?: string; body?: string; co
       ...(init.key ? { 'idempotency-key': init.key } : {}),
       ...(init.contentLength ? { 'content-length': init.contentLength } : {}),
     },
-    body: init.body ?? '{}',
+    body: init.body ?? '{"consent":true}',
   });
 
 const stubCheckoutCreate = (sessionId = 'cs_test_new', calls?: { n: number }) => {
@@ -221,7 +221,7 @@ describe('POST /v1/checkout/session', () => {
     env.DODO_CHECKOUT_ENABLED = 'true';
     const calls = { n: 0 };
     stubCheckoutCreate('cs_test_new', calls);
-    const body = JSON.stringify({ clientId: 'spoofed-browser-id' });
+    const body = JSON.stringify({ clientId: 'spoofed-browser-id', consent: true });
     const first = await handleCheckoutSession(checkoutRequest({ token: TEST_TOKEN, key: 'idem-key-00000001', body }), env);
     expect(first.status).toBe(201);
     expect(await first.json()).toMatchObject({ session_id: 'cs_test_new_1', checkout_url: 'https://test.dodopayments.com/checkout/cs_test_new_1' });
@@ -272,6 +272,18 @@ describe('POST /v1/checkout/session', () => {
     const retry = await handleCheckoutSession(checkoutRequest({ token: TEST_TOKEN, key: 'idem-key-00000008' }), env);
     expect(retry.status).toBe(409);
     expect(calls.n).toBe(1); // never a second upstream attempt
+  });
+
+  it('refuses checkout without the withdrawal-waiver consent, before anything is created', async () => {
+    env.DODO_CHECKOUT_ENABLED = 'true';
+    const upstream = vi.fn(async () => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', upstream);
+    for (const body of ['{}', '{"consent":false}', '{"consent":"yes"}']) {
+      const res = await handleCheckoutSession(checkoutRequest({ token: TEST_TOKEN, key: 'idem-key-consent01', body }), env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'consent_required' });
+    }
+    expect(upstream).not.toHaveBeenCalled();
   });
 
   it('ADVERSARIAL: a malformed 2xx body (missing session_id) is AMBIGUOUS - the session may exist upstream', async () => {

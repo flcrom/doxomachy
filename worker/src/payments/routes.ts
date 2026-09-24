@@ -200,8 +200,7 @@ export const handleDodoWebhook = async (request: Request, env: DodoEnv): Promise
 
 /** Browser -> Worker. Create a checkout session in the configured Dodo environment. */
 export const handleCheckoutSession = async (request: Request, env: DodoEnv): Promise<Response> => {
-  // Hard gate. Paid checkout is deliberately disabled until the owner approves
-  // seller identity, payout, refund terms and the exact USD offer.
+  // Hard gate: paid checkout stays off until DODO_CHECKOUT_ENABLED is "true".
   if (env.DODO_CHECKOUT_ENABLED !== 'true') {
     return json({ error: 'checkout_disabled', message: 'Free launch mode. Paid moves are not active.' }, 403, env.WEB_ORIGIN);
   }
@@ -221,10 +220,15 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
   const idempotencyKey = request.headers.get('idempotency-key') || '';
   if (!IDEMPOTENCY_KEY_RE.test(idempotencyKey)) return json({ error: 'idempotency_key_required' }, 400, env.WEB_ORIGIN);
 
-  let requested: unknown;
-  try { requested = read.body ? JSON.parse(read.body)?.pack : undefined; } catch { requested = undefined; }
-  const pack = packByKey(env, requested);
+  let parsed: any;
+  try { parsed = read.body ? JSON.parse(read.body) : undefined; } catch { parsed = undefined; }
+  const pack = packByKey(env, parsed?.pack);
   if (!pack) return json({ error: 'pack_unavailable' }, 400, env.WEB_ORIGIN);
+  // EU/UK digital content: the buyer must tick the consent box (immediate
+  // delivery, loss of the withdrawal right) before a session is created.
+  // The time is kept in the Dodo session metadata as the record.
+  if (parsed?.consent !== true) return json({ error: 'consent_required' }, 400, env.WEB_ORIGIN);
+  const consentAt = new Date().toISOString();
 
   const store = new D1FulfillmentStore(env.DB);
   const intentKey = `${accountId}:${idempotencyKey}`;
@@ -295,7 +299,7 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
       // and the intent, so webhooks and reconciliation can re-attach. Dodo
       // documents no checkout idempotency key, so this correlation plus the
       // persisted intent is the recovery path.
-      metadata: { account_id: accountId, intent_key: intentKey, product_id: intent.product_id },
+      metadata: { account_id: accountId, intent_key: intentKey, product_id: intent.product_id, withdrawal_waiver_consent_at: consentAt },
     });
   } catch (err) {
     if (err instanceof DodoApiError && !err.ambiguous) {

@@ -49,6 +49,13 @@
         <button class="text-button" id="signOut" type="button">Sign out this device</button>
         <button class="text-button auth-danger" id="deleteAccount" type="button">Delete account</button>
       </div>
+      <form id="buyForm" class="buy-form" aria-labelledby="buy-title" hidden>
+        <h3 id="buy-title" class="profile-title">Buy credits</h3>
+        <label class="check consent"><input id="buyConsent" type="checkbox" /> I agree that my credits are delivered immediately and I understand that I lose my right of withdrawal once they are delivered. All sales are final.</label>
+        <div class="auth-actions"><button class="primary" type="button" data-pack="small" disabled>10 credits · $5</button> <button class="primary" type="button" data-pack="large" disabled>50 credits · $19</button></div>
+        <p class="fine">Payments are processed by Dodo Payments. See the <a href="refunds.html">Refund &amp; Cancellation Policy</a>.</p>
+        <p id="buyStatus" class="eviction-preview" role="status" aria-live="polite"></p>
+      </form>
       <form id="profileForm" class="profile-form" aria-labelledby="profile-title">
         <h3 id="profile-title" class="profile-title">Public profile <span class="fine">optional</span></h3>
         <label class="alias">Name <input id="profileName" name="name" maxlength="24" pattern="[A-Za-z0-9-]{1,24}" placeholder="anonymous" autocomplete="nickname" aria-describedby="nameHint" /></label>

@@ -11,12 +11,13 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="masthead shell">
-    <a class="wordmark" href="#top" aria-label="Doxomachy home">DOXOMACHY</a>
+    <a class="wordmark" href="#main-content" aria-label="Doxomachy home">DOXOMACHY</a>
     <div class="cycle"><span class="live-dot" aria-hidden="true"></span> FREE LAUNCH MODE · LIVE BUILD</div>
   </header>
 
-  <main id="top" class="shell">
+  <main id="main-content" class="shell" tabindex="-1">
     <section class="hero" aria-labelledby="hero-title">
       <div>
         <p class="kicker">One public mind. Hard limit.</p>
@@ -24,23 +25,25 @@
       </div>
       <div class="hero-side">
         <p class="lede">Add a belief. Protect one you need. When memory fills, weak beliefs disappear. At midnight, the AI writes from what survived.</p>
-        <button class="primary" id="openComposer" type="button">Add a belief</button>
+        <button class="primary" id="openComposer" type="button" aria-controls="composer" aria-expanded="false">Add a belief</button>
       </div>
     </section>
 
     <section id="composer" class="composer" hidden aria-labelledby="composer-title">
       <div class="composer-head">
         <h2 id="composer-title">Add a belief</h2>
-        <button class="text-button" id="closeComposer" type="button">Close</button>
+        <button class="text-button" id="closeComposer" type="button" aria-label="Close belief form">Close</button>
       </div>
       <form id="beliefForm">
         <label for="beliefText">What should the AI remember?</label>
-        <textarea id="beliefText" name="belief" maxlength="120" required placeholder="Write one clear sentence."></textarea>
+        <textarea id="beliefText" name="belief" maxlength="120" required enterkeyhint="send" aria-describedby="composerHint charCount composerError" placeholder="Write one clear sentence."></textarea>
+        <p id="composerHint" class="fine composer-hint">One line. Enter adds the belief. Esc closes the form.</p>
         <div class="form-row">
           <label class="alias">Alias <input id="alias" name="alias" maxlength="20" placeholder="anonymous" /></label>
-          <span id="charCount" aria-live="polite">0 / 120</span>
+          <span id="charCount">0 / 120</span>
         </div>
         <label class="check"><input id="publicAck" type="checkbox" required /> I understand this will be public.</label>
+        <p id="composerError" class="composer-error" role="alert"></p>
         <div id="evictionPreview" class="eviction-preview" aria-live="polite"></div>
         <button class="primary" type="submit">Use one free move</button>
         <p class="fine">Paid moves are not active. Your first five moves are free on this device.</p>
@@ -50,10 +53,11 @@
     <section class="board" aria-labelledby="memory-title">
       <div class="memory-panel">
         <div class="section-head">
-          <div><p class="kicker">Live memory</p><h2 id="memory-title">What it believes now</h2></div>
-          <span id="updatedAt">Updated now</span>
+          <div><p class="kicker">Live memory</p><h2 id="memory-title" tabindex="-1">What it believes now</h2></div>
+          <span id="updatedAt">Connecting…</span>
         </div>
-        <ol id="memoryList" class="memory-list"></ol>
+        <p id="freshnessLive" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
+        <ol id="memoryList" class="memory-list" aria-labelledby="memory-title" aria-describedby="updatedAt"></ol>
       </div>
 
       <aside class="status" aria-label="Memory status">
@@ -98,6 +102,7 @@
   <script src="snapshot-state.js"></script>
   <script src="realtime.js"></script>
   <script src="account-token.js"></script>
+  <script src="a11y.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

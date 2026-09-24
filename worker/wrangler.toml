@@ -2,6 +2,8 @@ name = "doxomachy"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
+routes = [{ pattern = "api.doxomachy.flcrom.dev", custom_domain = true }]
+
 [durable_objects]
 bindings = [{ name = "MIND", class_name = "Mind" }]
 
@@ -12,7 +14,7 @@ new_sqlite_classes = ["Mind"]
 [[d1_databases]]
 binding = "DB"
 database_name = "doxomachy"
-database_id = "4403ece3-23ae-4c32-84fc-4a76fda7745b"
+database_id = "24c198b5-54a4-482b-925d-2facc458e86b"
 
 [ai]
 binding = "AI"

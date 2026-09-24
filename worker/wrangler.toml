@@ -20,9 +20,11 @@ database_id = "24c198b5-54a4-482b-925d-2facc458e86b"
 binding = "AI"
 
 [triggers]
-# Every 6h (UTC). One diary per UTC day of the scheduled event; later ticks
-# that day short-circuit, so a missed or failed run self-heals on the next tick.
-crons = ["0 */6 * * *"]
+# Hourly at :30 UTC, off the 00:00 UTC quota reset. The 00:30 tick writes the
+# day's diary; later ticks short-circuit once it exists and otherwise retry.
+# The day's beliefs are frozen in D1 (diary_sources) on the first attempt, so
+# a day that fails is regenerated from that copy later, even after it ends.
+crons = ["30 * * * *"]
 
 [vars]
 WEB_ORIGIN = "https://doxomachy.flcrom.dev"

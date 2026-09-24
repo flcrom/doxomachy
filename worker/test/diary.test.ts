@@ -237,9 +237,62 @@ describe('scheduled diary: one entry per UTC day', () => {
 });
 
 describe('wrangler cron', () => {
-  it('runs every 6 hours', async () => {
+  it('runs hourly at half past, off the 00:00 UTC quota reset', async () => {
     const { readFileSync } = await import('node:fs');
     const toml = readFileSync(new URL('../wrangler.toml', import.meta.url), 'utf8');
-    expect(toml).toMatch(/^crons = \["0 \*\/6 \* \* \*"\]$/m);
+    expect(toml).toMatch(/^crons = \["30 \* \* \* \*"\]$/m);
+  });
+});
+
+describe('diary backup: frozen daily beliefs', () => {
+  const sources = async (h: Harness) => (await (h.db as any).prepare('SELECT day,status,attempts,diary_cycle,beliefs FROM diary_sources ORDER BY day').all()).results as any[];
+
+  it('freezes the day\'s beliefs on the first attempt and recovers a failed day after it ends', async () => {
+    let aiUp = false;
+    const h = harness({ ai: async () => { if (!aiUp) throw new Error('ai down'); return { response: WORDS }; } });
+    const mind = await h.mind();
+    at(`${DAY1}T00:30:00Z`);
+    expect((await post(mind, DAY1)).status).toBe(502);
+    // Beliefs change later that day; the frozen copy must not.
+    const st = h.store.get('mind'); st.beliefs = [{ id: 'b2', text: 'A later belief replaced the first one.', alias: 'qa', shields: 0, createdAt: 2, tokens: 8 }]; h.store.set('mind', st);
+    const mind2 = await h.mind();
+    at(`${DAY1}T23:30:00Z`);
+    expect((await post(mind2, DAY1)).status).toBe(502);
+    let src = await sources(h);
+    expect(src).toHaveLength(1);
+    expect(src[0]).toMatchObject({ day: DAY1, status: 'pending', attempts: 2 });
+    expect(JSON.parse(src[0].beliefs).map((b: any) => b.id)).toEqual(['b1']);
+    expect(await rows(h)).toHaveLength(0);
+    // Next day, AI is back: Day 1 is written first from its frozen beliefs, then Day 2.
+    aiUp = true;
+    at(`${DAY2}T00:30:00Z`);
+    const res = await post(mind2, DAY2);
+    expect(res.status).toBe(200);
+    const written = await rows(h);
+    expect(written.map((r) => r.cycle)).toEqual(['001', '002']);
+    src = await sources(h);
+    expect(src.map((r) => [r.day, r.status, r.diary_cycle])).toEqual([[DAY1, 'written', '001'], [DAY2, 'written', '002']]);
+    expect(JSON.parse(src[1].beliefs).map((b: any) => b.id)).toEqual(['b2']);
+    expect(h.store.get('mind')).toMatchObject({ diaryDate: DAY2, cycle: 3, diary: { cycle: '002' } });
+    // Reruns stay idempotent.
+    expect(await (await post(mind2, DAY2)).json()).toEqual({ written: false, reason: 'already_written' });
+    expect(await rows(h)).toHaveLength(2);
+  });
+
+  it('parks a day that keeps failing so newer days are not blocked', async () => {
+    let aiUp = false;
+    const h = harness({ ai: async () => { if (!aiUp) throw new Error('ai down'); return { response: WORDS }; } });
+    const mind = await h.mind();
+    at(`${DAY1}T00:30:00Z`);
+    await post(mind, DAY1);
+    await (h.db as any).prepare("UPDATE diary_sources SET attempts=47 WHERE day=?").bind(DAY1).run();
+    at(`${DAY2}T00:30:00Z`);
+    expect((await post(mind, DAY2)).status).toBe(503); // catch-up attempt 48 fails and parks Day 1
+    expect((await sources(h))[0]).toMatchObject({ day: DAY1, status: 'failed', attempts: 48 });
+    aiUp = true;
+    at(`${DAY2}T01:30:00Z`);
+    expect((await post(mind, DAY2)).status).toBe(200);
+    expect((await rows(h)).map((r) => r.cycle)).toEqual(['001']);
+    expect((await sources(h)).map((r) => r.status)).toEqual(['failed', 'written']);
   });
 });

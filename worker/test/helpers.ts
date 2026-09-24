@@ -63,7 +63,7 @@ export class FakeD1 {
   constructor() {
     this.db.exec('PRAGMA foreign_keys = ON');
     const migrationsDir = join(TEST_DIR, '..', 'migrations');
-    for (const file of ['0001.sql', '0002.sql', '0002_dodo_payments.sql', '0003_dodo_disputes.sql']) {
+    for (const file of ['0001.sql', '0002.sql', '0002_dodo_payments.sql', '0003_dodo_disputes.sql', '0004_diary_sources.sql']) {
       this.db.exec(readFileSync(join(migrationsDir, file), 'utf8'));
     }
     // The two fixture accounts used across the suite (FK targets).

@@ -77,7 +77,7 @@ In Dodo **live mode**:
 - The live business ID (`DODO_BUSINESS_ID`). Configure it rather than leaving it blank, so missing or foreign-business webhooks are rejected.
 - A live API key with write access, delivered through the vault. Checkout session creation needs write access. Dodo documents API key management under Developer -> API Keys: https://docs.dodopayments.com/api-reference/introduction
 - A long random operator key for `DODO_ADMIN_KEY`, delivered through the vault.
-- A live webhook endpoint at `https://doxomachy.matlabdec12.workers.dev/webhooks/dodo` (or the current deployed Worker URL if it changes), plus its live `whsec_...` signing secret delivered through the vault.
+- A live webhook endpoint at `https://api.doxomachy.flcrom.dev/webhooks/dodo`, plus its live `whsec_...` signing secret delivered through the vault.
 - The webhook subscribed to:
   - `payment.succeeded`, `payment.failed`, `payment.cancelled`, `payment.processing`
   - `refund.succeeded`, `refund.failed`
@@ -119,7 +119,7 @@ Test-mode keys, product IDs, webhook secrets, and data do not work in live mode.
    ```sh
    curl -fsS -X POST \
      -H "Authorization: Bearer $DODO_ADMIN_KEY" \
-     https://doxomachy.matlabdec12.workers.dev/v1/admin/dodo/reconcile
+     https://api.doxomachy.flcrom.dev/v1/admin/dodo/reconcile
    ```
 
    Do not place the operator key in shell history on a shared machine. Prefer reading it from the vault into the process environment.

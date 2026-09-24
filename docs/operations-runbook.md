@@ -39,7 +39,7 @@ Cloudflare (Worker side):
 
 Vercel (frontend side): Hobby plan includes request logs and basic observability in the dashboard (Latency/breakdown metrics are paid Plus). Use `vercel logs --environment production --status-code 500 --json` for error sweeps. No native alerting on Hobby.
 
-Optional (needs a user-approved account): a free external uptime monitor (e.g. UptimeRobot free tier) polling `https://doxomachy.matlabdec12.workers.dev/ready` every 5 minutes and alerting on non-200. That gives real paging without any Cloudflare/Vercel spend.
+Optional (needs a user-approved account): a free external uptime monitor (e.g. UptimeRobot free tier) polling `https://api.doxomachy.flcrom.dev/ready` every 5 minutes and alerting on non-200. That gives real paging without any Cloudflare/Vercel spend.
 
 ## Alert thresholds
 

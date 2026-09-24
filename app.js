@@ -1,4 +1,4 @@
-const API='https://doxomachy.matlabdec12.workers.dev',PUBLIC_SNAPSHOT=globalThis.DOXOMACHY_PUBLIC_SNAPSHOT||'',LIMIT=1000,MAX_SNAPSHOT_AGE=10000;
+const API='https://api.doxomachy.flcrom.dev',PUBLIC_SNAPSHOT=globalThis.DOXOMACHY_PUBLIC_SNAPSHOT||'',LIMIT=1000,MAX_SNAPSHOT_AGE=10000;
 const SNAPSHOT_CACHE_KEY='doxomachy-public-snapshot';
 let sessionToken=sessionStorage.getItem('doxomachy-session')||'';
 let accountBearer=loadAccountToken();

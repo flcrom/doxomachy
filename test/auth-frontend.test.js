@@ -38,7 +38,7 @@ test('vercel.json pins CSP, nosniff and frame denial for static hosting',()=>{
  const v=JSON.parse(read('vercel.json'));
  const all=v.headers.flatMap(h=>h.headers.map(x=>`${x.key}:${x.value}`)).join('\n');
  assert.match(all,/content-security-policy:.*script-src 'self'/);
- assert.match(all,/content-security-policy:.*connect-src 'self' https:\/\/doxomachy\.matlabdec12\.workers\.dev/);
+ assert.match(all,/content-security-policy:.*connect-src 'self' https:\/\/api\.doxomachy\.flcrom\.dev/);
  assert.match(all,/content-security-policy:.*frame-ancestors 'none'/);
  assert.match(all,/x-content-type-options:nosniff/);
 });

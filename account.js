@@ -1,4 +1,4 @@
-const API='https://doxomachy.matlabdec12.workers.dev';
+const API='https://api.doxomachy.flcrom.dev';
 const $=s=>document.querySelector(s);
 let bearer=loadAccountToken();
 function toast(msg){const el=$('#toast');el.textContent=msg;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>el.hidden=true,3200)}

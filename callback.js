@@ -1,4 +1,4 @@
-const API='https://doxomachy.matlabdec12.workers.dev';
+const API='https://api.doxomachy.flcrom.dev';
 const status=$=>document.querySelector($);
 // The token lives in the URL fragment so it never reaches server request
 // logs. Strip it from the address bar and history before using it.

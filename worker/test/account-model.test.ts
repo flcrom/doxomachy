@@ -18,7 +18,7 @@ function d1(){
   first:async()=>db.prepare(sql).get(...p)??null,
   all:async()=>({results:db.prepare(sql).all(...p)})});
  const D1:any={prepare:(sql:string)=>({bind:(...p:any[])=>stmt(sql,p),...stmt(sql)}),
-  batch:async(list:any[])=>{db.exec('BEGIN');try{const out=list.map(s=>{const r=db.prepare(s.__sql).run(...s.__p);return {meta:{changes:Number(r.changes)}}});db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}};
+  batch:async(list:any[])=>{db.exec('BEGIN');try{const out=list.map(s=>{if(/^\s*SELECT/i.test(s.__sql))return {results:db.prepare(s.__sql).all(...s.__p),meta:{changes:0}};const r=db.prepare(s.__sql).run(...s.__p);return {meta:{changes:Number(r.changes)}}});db.exec('COMMIT');return out}catch(e){db.exec('ROLLBACK');throw e}}};
  return {db,D1};
 }
 const T=1_800_000_000_000;

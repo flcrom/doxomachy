@@ -1,8 +1,8 @@
 import llama3Tokenizer from 'llama3-tokenizer-js';
 import {correlationId,logEvent,routeTemplate,withCorrelation,Operation,Outcome} from './observability';
 import {makePublicSnapshot,publishIfNewer,snapshotLag} from './public-snapshot';
-import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, refundAccountCredit, requireAccount, settleAccountSpend, spendAccountMove, accountBalances, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
-import { handleProfile, publicIdentity } from './profile';
+import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, requireAccount, spendAccountMove, finishAccountMove, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
+import { handleProfile, profileSql } from './profile';
 import { handleDodoWebhook, handleCheckoutSession, handleDodoReconcile } from './payments/routes';
 
 export interface Env { REVIEW_TO?: string; API_ORIGIN?: string; BELIEF_CREDIT_COST?: string; SHIELD_CREDIT_COST?: string; FREE_SHIELDS?: string; PROTECT_NEW_UNTIL_DIARY?: string; SHIELD_DECAY?: string; MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
@@ -222,30 +222,38 @@ async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionCon
    if(!isValidTokenFormat(bearer))return json({error:'account_required'},401,origin||undefined);
    const account=await requireAccount(request,env);
    if(!account)return json({error:'unauthorized'},401,origin||undefined);
-   await reconcile(account.accountId);
    let paidIdem=request.headers.get('idempotency-key')||'';
    if(!/^[A-Za-z0-9_-]{16,100}$/.test(paidIdem))paidIdem=crypto.randomUUID()+crypto.randomUUID().replaceAll('-','');
    const move=url.pathname==='/v1/beliefs'?'belief':'shield',costs=moveCosts(env);
-   const spend=await spendAccountMove(env,account.accountId,paidIdem,Date.now(),move,costs[move],id);
+   // D1 round trips per paid move: session lookup, one spend batch (which
+   // also reads the profile for beliefs), one settle batch (which also reads
+   // balances and checks for stale pending spends). Reconciling older
+   // pending spends only runs when that check finds some.
+   let body:any={};
+   if(move==='belief'){try{body=JSON.parse(await request.text())}catch{}}
+   const wantsIdentity=move==='belief'&&body?.anonymous!==true;
+   const spend=await spendAccountMove(env,account.accountId,paidIdem,Date.now(),move,costs[move],id,wantsIdentity?[env.DB.prepare(profileSql.select).bind(account.accountId)]:[]);
    if(!spend.ok)return json({error:spend.error},spend.status,origin||undefined);
    forwarded.set('x-paid-move','1');
    forwarded.set('x-session-id','paid:'+account.accountId);
    forwarded.set('idempotency-key',paidIdem);
-   let toMind=routeRequest(request,forwarded);
-   if(move==='belief'){
+   // The belief body was already read above, so beliefs get a fresh request;
+   // shields forward the original.
+   let toMind:Request;
+   if(move!=='belief')toMind=routeRequest(request,forwarded);
+   else{
     // Identity comes from the account's profile, never from the client: a
     // belief shows the profile name (and approved image/link) unless the
     // author posts it anonymously.
-    let body:any={};try{body=JSON.parse(await request.text())}catch{}
-    const identity=body?.anonymous===true?null:await publicIdentity(env,account.accountId);
+    const profile:any=wantsIdentity?spend.extra?.[0]:null;
+    const identity=profile&&profile.display_name?{publicId:profile.public_id as string,name:profile.display_name as string}:null;
     forwarded.set('content-type','application/json');
     toMind=new Request(request.url,{method:'POST',headers:forwarded,body:JSON.stringify({text:body?.text,alias:identity?identity.name:'anonymous',publicId:identity?.publicId})});
    }
    const paidResponse=await mindStub(env).fetch(toMind);
-   if(paidResponse.status>=400){if(!spend.replay)await refundAccountCredit(env,account.accountId,paidIdem,Date.now(),id)}
-   else await settleAccountSpend(env,account.accountId,paidIdem,'spent',Date.now(),id);
+   const balances=await finishAccountMove(env,account.accountId,paidIdem,paidResponse.status>=400?(spend.replay?'none':'refund'):'spent',Date.now(),id);
+   if(balances.stalePending){const r=reconcile(account.accountId).catch(()=>{});if(ctx?.waitUntil)ctx.waitUntil(r);else await r}
    const out=addCors(paidResponse,origin);
-   const balances=await accountBalances(env,account.accountId);
    out.headers.set('x-account-credits',String(balances.credits));
    out.headers.set('x-free-shields',String(balances.free_shields));
    return out;

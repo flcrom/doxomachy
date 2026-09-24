@@ -12,16 +12,16 @@ type Row=Record<string,any>;
 // statements run sequentially and a failure rolls the whole batch back.
 class MockD1{
  accounts:Row[]=[];links:Row[]=[];sessions:Row[]=[];rates=new Map<string,Row>();credits=new Map<string,number>();spends=new Map<string,Row>();meta=new Map<string,Row>();freeUsed=new Map<string,number>();intents:Row[]=[];beforeBatch?:()=>void;
- failBatchAt=-1;batchCalls=0;
- prepare(sql:string){const db=this;return {bind(...p:any[]){return {__sql:sql,__params:p,run:async()=>db.exec(sql,p),first:async()=>db.one(sql,p),all:async()=>({results:db.all(sql,p)})}}}}
+ failBatchAt=-1;batchCalls=0;roundTrips=0;
+ prepare(sql:string){const db=this;return {bind(...p:any[]){return {__sql:sql,__params:p,run:async()=>{db.roundTrips++;return db.exec(sql,p)},first:async()=>{db.roundTrips++;return db.one(sql,p)},all:async()=>{db.roundTrips++;return {results:db.all(sql,p)}}}}}}
  async batch(stmts:any[]){
-  this.batchCalls++;
+  this.batchCalls++;this.roundTrips++;
   this.beforeBatch?.(); // model a concurrent transaction committing before ours
   const snap=JSON.stringify({accounts:this.accounts,links:this.links,sessions:this.sessions,rates:[...this.rates],credits:[...this.credits],spends:[...this.spends],meta:[...this.meta],freeUsed:[...this.freeUsed]});
   const out=[];
   for(let i=0;i<stmts.length;i++){
    if(i===this.failBatchAt&&stmts[0].__sql===authSql.verifyConsume){this.restore(snap);throw new Error('d1_batch_failure')}
-   try{out.push(await this.exec(stmts[i].__sql,stmts[i].__params))}catch(e){this.restore(snap);throw e}
+   try{const q=stmts[i].__sql,pp=stmts[i].__params;out.push(/^SELECT/.test(q)?{results:(()=>{try{return this.all(q,pp)}catch{const r=this.one(q,pp);return r?[r]:[]}})(),meta:{changes:0}}:await this.exec(q,pp))}catch(e){this.restore(snap);throw e}
   }
   return out;
  }
@@ -75,6 +75,7 @@ class MockD1{
    case authSql.accountHmac:{const r=this.accounts.find(a=>a.id===p[0]);return r?{email_hmac:r.email_hmac}:null}
    case authSql.freeShieldsUsed:{return this.freeUsed.has(p[0])?{used:this.freeUsed.get(p[0])}:null}
    case authSql.paidSpendStatus:{const r=this.spends.get(p[0]);return r?{status:r.status}:null}
+   case authSql.paidSpendOutcome:{const r=this.spends.get(p[0]);return r?{status:r.status,resolver:r.resolver}:null}
   }
   throw new Error('unexpected sql: '+sql);
  }
@@ -415,6 +416,27 @@ describe('paid gameplay spend',()=>{
   expect(res.status).toBe(402);expect(doCalls).toHaveLength(0);
   expect(db.spends.size).toBe(0);
   expect((await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db))).status).toBe(402);
+ });
+ it('a paid belief or shield costs 3 D1 round trips: session, spend batch, settle batch',async()=>{
+  const db=new MockD1();
+  const {session}=await signIn(db);
+  const id=db.accounts[0].id;db.credits.set(id,10);
+  db.roundTrips=0;
+  const belief=await worker.fetch(paidPost('/v1/beliefs',session,'idem-key-0000000101'),makeEnv(db));
+  expect(belief.status).toBe(201);expect(db.roundTrips).toBe(3);
+  expect(belief.headers.get('x-account-credits')).toBe('8');
+  db.roundTrips=0;
+  const shield=await worker.fetch(paidPost('/v1/beliefs/00000000-0000-4000-8000-000000000000/protect',session,'idem-key-0000000102'),makeEnv(db));
+  expect(db.roundTrips).toBe(3);expect(shield.headers.get('x-account-credits')).toBe('8');
+ });
+ it('reconciles an older pending spend after the move instead of before it',async()=>{
+  const db=new MockD1();
+  const {session}=await signIn(db);
+  const id=db.accounts[0].id;db.credits.set(id,4);
+  db.spends.set('paid:'+id+':stale-key-00000001',{key:'paid:'+id+':stale-key-00000001',account_id:id,status:'pending',created_at:Date.now()-60*60*1000,resolved_at:null,resolver:'x'});
+  const res=await worker.fetch(paidPost('/v1/beliefs',session,'idem-key-0000000103'),makeEnv(db));
+  expect(res.status).toBe(201);
+  expect(db.spends.get('paid:'+id+':stale-key-00000001')!.status).not.toBe('pending');
  });
  it('refunds and marks the spend refunded when the Durable Object write fails',async()=>{
   const db=new MockD1();

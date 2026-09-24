@@ -78,6 +78,7 @@ export const authSql = {
   freeShieldUse: 'INSERT INTO account_free_shields (account_id, used, updated_at) SELECT ?, 1, ? WHERE EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?) ON CONFLICT(account_id) DO UPDATE SET used = used + 1, updated_at = excluded.updated_at',
   freeShieldsUsed: 'SELECT used FROM account_free_shields WHERE account_id = ?',
   paidSpendStatus: 'SELECT status FROM paid_spends WHERE key = ?',
+  paidSpendOutcome: 'SELECT status, resolver FROM paid_spends WHERE key = ?',
   paidSpendClaim: "UPDATE paid_spends SET status = ?, resolved_at = ?, resolver = ? WHERE key = ? AND status = 'pending'",
   // Markers written before 0005 have no spend_meta row and mean one credit.
   paidSpendRefundGuarded: "UPDATE credits SET balance = balance + COALESCE((SELECT amount FROM spend_meta WHERE key = ? AND kind = 'credit'), 1), updated_at = ? WHERE subject = ? AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?) AND NOT EXISTS (SELECT 1 FROM spend_meta WHERE key = ? AND kind = 'free_shield')",
@@ -285,16 +286,14 @@ export type SpendResult = { ok: true; replay: boolean } | { ok: false; status: n
 // satisfy the decrement guard, so replays never double-charge.
 export type SpendKind = 'credit' | 'free_shield';
 
-async function existingSpend(env: AuthEnv, marker: string): Promise<SpendResult | null> {
-  const existing = await env.DB.prepare(authSql.paidSpendStatus).bind(marker).first() as { status: string } | null;
+function replayResult(existing: { status: string } | null | undefined): SpendResult | null {
   if (!existing) return null;
   if (existing.status === 'refunded') return { ok: false, status: 409, error: 'idempotency_consumed' };
   return { ok: true, replay: true };
 }
 
-async function trySpend(env: AuthEnv, accountId: string, marker: string, kind: SpendKind, amount: number, now: number): Promise<boolean> {
-  const resolver = crypto.randomUUID();
-  const statements = kind === 'free_shield'
+function spendStatements(env: AuthEnv, accountId: string, marker: string, kind: SpendKind, amount: number, now: number, resolver: string): D1PreparedStatement[] {
+  return kind === 'free_shield'
     ? [
         env.DB.prepare(authSql.freeSpendInsert).bind(marker, accountId, now, resolver, accountId, freeShieldAllowance(env)),
         env.DB.prepare(authSql.spendMetaInsert).bind(marker, 'free_shield', 1, marker, resolver),
@@ -305,27 +304,76 @@ async function trySpend(env: AuthEnv, accountId: string, marker: string, kind: S
         env.DB.prepare(authSql.spendMetaInsert).bind(marker, 'credit', amount, marker, resolver),
         env.DB.prepare(authSql.creditSpendGuarded).bind(amount, now, accountId, amount, marker, resolver)
       ];
-  const [inserted] = await env.DB.batch(statements);
-  return (inserted.meta?.changes || 0) === 1;
 }
 
-// One move for an account. A shield uses a free shield first, then
-// `creditCost` credits; a belief always costs `creditCost` credits. Each
-// attempt is one atomic batch (marker + what it took + the decrement).
-export async function spendAccountMove(env: AuthEnv, accountId: string, idemKey: string, now: number, move: 'belief' | 'shield', creditCost: number, cid?: string): Promise<SpendResult & { kind?: SpendKind }> {
+// One move for an account, in ONE atomic D1 batch. A shield uses a free
+// shield first, then `creditCost` credits; a belief always costs
+// `creditCost` credits. The shield batch carries both attempts with
+// different resolver nonces: the marker key is unique, so at most one
+// insert lands and only the statements guarded by the winning nonce take
+// anything. The batch ends by reading the marker back, which tells us in
+// the same round trip whether this call won (our nonce), replayed an
+// earlier key (foreign nonce), or had nothing to spend (no row).
+// `extra` statements (e.g. the profile read) ride along and their first
+// rows are returned so the caller saves round trips.
+export async function spendAccountMove(env: AuthEnv, accountId: string, idemKey: string, now: number, move: 'belief' | 'shield', creditCost: number, cid?: string, extra: D1PreparedStatement[] = []): Promise<SpendResult & { kind?: SpendKind; extra?: unknown[] }> {
   const marker = `paid:${accountId}:${idemKey}`;
   const amount = Math.max(1, Math.floor(creditCost));
-  const replay = await existingSpend(env, marker);
-  if (replay) return replay;
-  if (move === 'shield' && await trySpend(env, accountId, marker, 'free_shield', 1, now)) {
-    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: 'spend_pending_free_shield' });
-    return { ok: true, replay: false, kind: 'free_shield' };
+  const freeNonce = crypto.randomUUID(), creditNonce = crypto.randomUUID();
+  const statements = [
+    ...(move === 'shield' ? spendStatements(env, accountId, marker, 'free_shield', 1, now, freeNonce) : []),
+    ...spendStatements(env, accountId, marker, 'credit', amount, now, creditNonce),
+    env.DB.prepare(authSql.paidSpendOutcome).bind(marker),
+    ...extra
+  ];
+  const results = await env.DB.batch(statements);
+  const outcomeAt = statements.length - extra.length - 1;
+  const row = (results[outcomeAt] as any)?.results?.[0] as { status: string; resolver: string } | undefined;
+  const extraRows = results.slice(outcomeAt + 1).map((r: any) => r?.results?.[0] ?? null);
+  const kind: SpendKind | null = row?.resolver === freeNonce ? 'free_shield' : row?.resolver === creditNonce ? 'credit' : null;
+  if (kind) {
+    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: kind === 'free_shield' ? 'spend_pending_free_shield' : 'spend_pending' });
+    return { ok: true, replay: false, kind, extra: extraRows };
   }
-  if (await trySpend(env, accountId, marker, 'credit', amount, now)) {
-    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: 'spend_pending' });
-    return { ok: true, replay: false, kind: 'credit' };
+  const replay = replayResult(row);
+  if (replay) return { ...replay, extra: extraRows };
+  return { ok: false, status: 402, error: move === 'belief' ? 'no_credits' : 'no_shields', extra: extraRows };
+}
+
+// Closes a paid move in ONE batch: settles (or refunds) the marker and reads
+// back both balances plus whether this account has older pending spends
+// that need reconciling. `refund` is false for a replayed key: the earlier
+// request owns that marker.
+export async function finishAccountMove(env: AuthEnv, accountId: string, idemKey: string, outcome: 'spent' | 'refund' | 'none', now: number, cid?: string): Promise<{ credits: number; free_shields: number; stalePending: boolean }> {
+  const key = `paid:${accountId}:${idemKey}`;
+  const resolver = crypto.randomUUID();
+  const head = outcome === 'spent'
+    ? [env.DB.prepare(authSql.paidSpendClaim).bind('spent', now, resolver, key)]
+    : outcome === 'refund'
+      ? [
+          env.DB.prepare(authSql.paidSpendClaim).bind('refunded', now, resolver, key),
+          env.DB.prepare(authSql.paidSpendRefundGuarded).bind(key, now, accountId, key, resolver, key),
+          env.DB.prepare(authSql.freeShieldRefundGuarded).bind(now, accountId, key, resolver, key)
+        ]
+      : [];
+  const results: any[] = await env.DB.batch([
+    ...head,
+    env.DB.prepare(authSql.creditsSelect).bind(accountId),
+    env.DB.prepare(authSql.freeShieldsUsed).bind(accountId),
+    env.DB.prepare(authSql.paidSpendPending).bind(accountId, now - PAID_SPEND_RECONCILE_MS)
+  ]);
+  const claimed = head.length ? (results[0]?.meta?.changes || 0) === 1 : false;
+  if (outcome === 'spent') logEvent({ operation: 'credits', outcome: claimed ? 'ok' : 'degraded', correlationId: cid || crypto.randomUUID(), reason: claimed ? 'spend_spent' : 'spend_claim_lost' });
+  if (outcome === 'refund') {
+    const returned = (results[1]?.meta?.changes || 0) + (results[2]?.meta?.changes || 0);
+    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: claimed ? (returned === 1 ? 'refund_credited' : 'refund_claimed_uncredited') : 'refund_claim_lost' });
   }
-  return (await existingSpend(env, marker)) || { ok: false, status: 402, error: move === 'belief' ? 'no_credits' : 'no_shields' };
+  const [credits, used, pending] = results.slice(head.length);
+  return {
+    credits: credits?.results?.[0]?.balance ?? 0,
+    free_shields: Math.max(0, freeShieldAllowance(env) - (used?.results?.[0]?.used ?? 0)),
+    stalePending: (pending?.results?.length || 0) > 0
+  };
 }
 
 // Kept for callers/tests of the one-credit path.

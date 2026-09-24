@@ -11,7 +11,16 @@ What is emitted:
 - One `http` event per request: status, templated route, method, duration. These are the request/error/latency counters - count them by `status` and `route` in Workers Logs.
 - `readiness` events for `/ready` polls.
 - `cron` events: `started`, `completed`, `diary_failed` (the cron also rethrows, so the dashboard marks the trigger failed).
-- `durable_object` events with reason codes: `writer_queue_saturated` (gauge `queue_depth`), `slow_mutation` (duration includes time spent waiting in the serialized writer queue, so it can fire on backlog alone, not only slow storage), `session_issuance_rate_limited`, `burst_rate_limited`, `quota_exhausted` (daily moves used up), `moderation_rejected`, `capacity_eviction` (gauges `evicted`, `tokens_used`), `ai_unavailable` (Workers AI call failed, e.g. free-tier quota), `diary_rejected`, `diary_written`.
+- `durable_object` events with reason codes: `writer_queue_saturated` (gauge `queue_depth`), `slow_mutation` (duration includes time spent waiting in the serialized writer queue, so it can fire on backlog alone, not only slow storage), `session_issuance_rate_limited`, `burst_rate_limited`, `quota_exhausted` (daily moves used up), `moderation_rejected`, `capacity_eviction` (gauges `evicted`, `tokens_used`), `ai_unavailable` (Workers AI call failed, e.g. free-tier quota), `diary_rejected`, `diary_written`, `diary_reconciled` (D1 already held the day's entry after a failed state save; state adopted it, no second write), `diary_reconcile_failed` (D1 lookup failed; the run failed closed and wrote nothing), `diary_state_save_failed` (D1 insert landed but the Durable Object save failed; the next tick reconciles), `diary_day_mismatch` (a tick was delivered outside its scheduled UTC day and skipped).
+
+## Diary cron
+
+- Trigger: `0 */6 * * *` (00:00, 06:00, 12:00, 18:00 UTC) in `worker/wrangler.toml`. The only way a diary is written; there is no public or manual trigger (`POST /v1/diary` on the Worker is 404, and the Durable Object route requires the internal scheduled header that the public forwarder never sets).
+- One diary per UTC day. The key is the UTC day of the scheduled event (`controller.scheduledTime`), sent to the Durable Object as `x-scheduled-day` and stored as `diaryDate` on mind state. Later ticks that day return `already_written` before any D1 read or Workers AI call. A failed or missed run is retried by the next tick of the same day.
+- Racing fires: generation runs outside the writer lock, then the writer re-checks `diaryDate` and D1 under the serialized queue, so only one entry is written.
+- Crash window: if the D1 insert succeeds but the Durable Object state save fails, the next tick looks up that day's row in D1 (by `created_at` inside the day's UTC window), adopts it as the current diary and moves `cycle` past the highest cycle in D1. It does not generate, write or advance the cycle a second time. New cycle numbers are always above the highest D1 cycle, and inserts are plain `INSERT` (no replace), so an older day's diary can never be overwritten.
+- If that D1 lookup fails, the run fails closed: it logs `diary_reconcile_failed`, returns 503 (the cron logs `diary_failed` and rethrows) and writes nothing. The next tick retries.
+- A tick delivered outside its scheduled UTC day (for example an 18:00 tick retried after midnight) is skipped with `diary_day_mismatch`; that keeps every row's `created_at` inside its own day window.
 
 ## Endpoints
 
@@ -39,7 +48,7 @@ Actionable starting points; tune after a week of real traffic. Sources: Workers 
 | Condition | Where | Action |
 | --- | --- | --- |
 | Any `/ready` 503 | readiness events / uptime monitor | Check `checks.database`/`checks.mind`, then Cloudflare status. Do not run migrations as a shortcut. |
-| `cron` `diary_failed` or `ai_unavailable` / `diary_rejected` | Workers Logs | Check D1/DO/Workers AI health and free-tier AI quota. Rerun only after dependencies are healthy. Never copy diary input/output into logs or tickets. |
+| `cron` `diary_failed` or `ai_unavailable` / `diary_rejected` | Workers Logs | Check D1/DO/Workers AI health and free-tier AI quota. Do not trigger a diary by hand; the next 6-hourly tick retries automatically and writes at most one entry for the day. `diary_reconcile_failed` or `diary_state_save_failed` on consecutive ticks means D1 or DO storage is unhealthy. Never copy diary input/output into logs or tickets. |
 | 5xx events > 5% of `http` events in 15 min, or > 10 in 5 min | Workers Logs | Pull `x-correlation-id` samples, check `reason` codes, recent deploys. |
 | p95 `duration_ms` > 1000 over 15 min | Workers Logs / dashboard | Check `writer_queue_saturated` and `slow_mutation` events; suspect DO serialization or D1 latency. |
 | `writer_queue_saturated` with `queue_depth` >= 10 sustained, or any >= 50 | Workers Logs | Write backlog on the single public mind. Expect rising write latency; consider read-only mode messaging. |

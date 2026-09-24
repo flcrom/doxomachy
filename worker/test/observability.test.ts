@@ -127,7 +127,7 @@ describe('Durable Object readiness and signals',()=>{
     const {Mind}=await import('../src/index');
     const store=new Map<string,unknown>();
     const state:any={storage:{get:(k:string)=>Promise.resolve(store.get(k)),put:(k:string,v:unknown)=>{store.set(k,v);return Promise.resolve()}},blockConcurrencyWhile:(fn:()=>Promise<void>)=>fn(),getWebSockets:()=>[]};
-    const env:any={WEB_ORIGIN:'https://doxomachy.vercel.app',DIARY_MODEL:'@cf/test-model',DB:{prepare:()=>({first:()=>Promise.resolve(null),run:()=>Promise.resolve({})})},AI:{run:()=>Promise.reject(new Error('quota'))}};
+    const env:any={WEB_ORIGIN:'https://doxomachy.vercel.app',DIARY_MODEL:'@cf/test-model',DB:{prepare:()=>{const q:any={first:()=>Promise.resolve(null),run:()=>Promise.resolve({}),bind:()=>q};return q}},AI:{run:()=>Promise.reject(new Error('quota'))}};
     return new Mind(state,env);
   };
 

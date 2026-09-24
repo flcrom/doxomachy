@@ -18,7 +18,9 @@ database_id = "4403ece3-23ae-4c32-84fc-4a76fda7745b"
 binding = "AI"
 
 [triggers]
-crons = ["0 0 * * *"]
+# Every 6h (UTC). One diary per UTC day of the scheduled event; later ticks
+# that day short-circuit, so a missed or failed run self-heals on the next tick.
+crons = ["0 */6 * * *"]
 
 [vars]
 WEB_ORIGIN = "https://doxomachy.flcrom.dev"

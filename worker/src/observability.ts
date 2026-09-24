@@ -58,6 +58,10 @@ export const logEvent=(event:EventFields):void=>{
 };
 
 export const withCorrelation=(response:Response,id:string):Response=>{
+  // A WebSocket upgrade (101) cannot be re-wrapped: new Response() rejects
+  // status 101 and would drop the socket, turning every realtime connect into
+  // a 500. Pass it through untouched.
+  if(response.status===101||(response as Response&{webSocket?:unknown}).webSocket)return response;
   const headers=new Headers(response.headers);headers.set('x-correlation-id',id);
   return new Response(response.body,{status:response.status,statusText:response.statusText,headers});
 };

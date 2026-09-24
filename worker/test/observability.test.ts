@@ -47,6 +47,13 @@ describe('privacy-safe observability',()=>{
   });
 });
 
+describe('websocket upgrades',()=>{
+  it('passes a 101 upgrade through untouched so the socket survives',()=>{
+    const upgrade={status:101,statusText:'Switching Protocols',headers:new Headers(),body:null,webSocket:{}} as unknown as Response;
+    expect(withCorrelation(upgrade,'correlation_ws')).toBe(upgrade);
+  });
+});
+
 describe('worker instrumentation',()=>{
   const envWith=(mindFetch:(...a:any[])=>Promise<Response>|Response,dbFirst?:()=>Promise<unknown>)=>({
     WEB_ORIGIN:'https://doxomachy.vercel.app',

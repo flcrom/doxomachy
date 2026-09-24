@@ -35,3 +35,7 @@ textarea[aria-invalid="true"]{border-width:2px}
 
 /* The hero's 1,000 set like selected text: page colors inverted. */
 .inverse{background:var(--ink,#111);color:var(--paper,#f5f4ef);padding:0 .08em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+/* Hero highlight: an inline span's background covers the full font box, which
+   is taller than the tight .82 line and ran into "tokens." below. Giving the
+   block its own box keeps the tight headline and leaves air under the black. */
+.hero h1 .inverse{display:inline-block;line-height:.9;padding:.03em .08em .1em;margin-bottom:.12em;vertical-align:baseline}

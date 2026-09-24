@@ -10,13 +10,13 @@ type Row=Record<string,any>;
 // In-memory D1 stand-in. batch() mirrors D1's transactional contract:
 // statements run sequentially and a failure rolls the whole batch back.
 class MockD1{
- accounts:Row[]=[];links:Row[]=[];sessions:Row[]=[];rates=new Map<string,Row>();credits=new Map<string,number>();spends=new Map<string,Row>();beforeBatch?:()=>void;
+ accounts:Row[]=[];links:Row[]=[];sessions:Row[]=[];rates=new Map<string,Row>();credits=new Map<string,number>();spends=new Map<string,Row>();meta=new Map<string,Row>();freeUsed=new Map<string,number>();intents:Row[]=[];beforeBatch?:()=>void;
  failBatchAt=-1;batchCalls=0;
  prepare(sql:string){const db=this;return {bind(...p:any[]){return {__sql:sql,__params:p,run:async()=>db.exec(sql,p),first:async()=>db.one(sql,p),all:async()=>({results:db.all(sql,p)})}}}}
  async batch(stmts:any[]){
   this.batchCalls++;
   this.beforeBatch?.(); // model a concurrent transaction committing before ours
-  const snap=JSON.stringify({accounts:this.accounts,links:this.links,sessions:this.sessions,rates:[...this.rates],credits:[...this.credits],spends:[...this.spends]});
+  const snap=JSON.stringify({accounts:this.accounts,links:this.links,sessions:this.sessions,rates:[...this.rates],credits:[...this.credits],spends:[...this.spends],meta:[...this.meta],freeUsed:[...this.freeUsed]});
   const out=[];
   for(let i=0;i<stmts.length;i++){
    if(i===this.failBatchAt&&stmts[0].__sql===authSql.verifyConsume){this.restore(snap);throw new Error('d1_batch_failure')}
@@ -24,13 +24,14 @@ class MockD1{
   }
   return out;
  }
- private restore(snap:string){const d=JSON.parse(snap);this.accounts=d.accounts;this.links=d.links;this.sessions=d.sessions;this.rates=new Map(d.rates);this.credits=new Map(d.credits);this.spends=new Map(d.spends)}
+ private restore(snap:string){const d=JSON.parse(snap);this.accounts=d.accounts;this.links=d.links;this.sessions=d.sessions;this.rates=new Map(d.rates);this.credits=new Map(d.credits);this.spends=new Map(d.spends);this.meta=new Map(d.meta);this.freeUsed=new Map(d.freeUsed)}
  exec(sql:string,p:any[]){
   switch(sql){
    case authSql.prune[0]:{const n=this.links.length;this.links=this.links.filter(r=>r.expires_at>p[0]);return ch(n-this.links.length)}
    case authSql.prune[1]:{const n=this.sessions.length;this.sessions=this.sessions.filter(r=>r.expires_at>p[0]);return ch(n-this.sessions.length)}
    case authSql.prune[2]:{let n=0;for(const [k,r] of this.rates)if(p[0]-r.window_start>=p[1]){this.rates.delete(k);n++}return ch(n)}
    case authSql.prune[3]:{let n=0;for(const [k,r] of this.spends)if(r.status!=='pending'&&p[0]-r.created_at>=p[1]){this.spends.delete(k);n++}return ch(n)}
+   case authSql.prune[4]:{let n=0;for(const k of [...this.meta.keys()])if(!this.spends.has(k)){this.meta.delete(k);n++}return ch(n)}
    case authSql.rateEnsure:{if(this.rates.has(p[0]))return ch(0);this.rates.set(p[0],{key:p[0],count:0,window_start:p[1]});return ch(1)}
    case authSql.rateReset:{const r=this.rates.get(p[1]);if(r&&p[2]-r.window_start>=p[3]){r.count=0;r.window_start=p[0];return ch(1)}return ch(0)}
    case authSql.rateHit:{const r=this.rates.get(p[0]);if(r&&r.count<p[1]){r.count++;return ch(1)}return ch(0)}
@@ -42,18 +43,23 @@ class MockD1{
    case authSql.verifyConsume:{const r=this.links.find(x=>x.token_hash===p[2]);if(r&&r.consumed_at===null&&r.expires_at>p[3]){r.consumed_at=p[0];r.consume_key=p[1];return ch(1)}return ch(0)}
    case authSql.verifySession:{const l=this.links.find(x=>x.consume_key===p[3]);if(l){this.sessions.push({token_hash:p[0],account_id:l.account_id,created_at:p[1],expires_at:p[2],revoked_at:null});return ch(1)}return ch(0)}
    case authSql.sessionRevokeOne:{const r=this.sessions.find(x=>x.token_hash===p[1]);if(r&&r.revoked_at===null){r.revoked_at=p[0];return ch(1)}return ch(0)}
-   case authSql.sessionRevokeAccount:{let n=0;for(const r of this.sessions)if(r.account_id===p[1]&&r.revoked_at===null){r.revoked_at=p[0];n++}return ch(n)}
-   case authSql.creditSpendGuarded:{const r=this.spends.get(p[2]);const b=this.credits.get(p[1])||0;if(r&&r.resolver===p[3]&&b>=1){this.credits.set(p[1],b-1);return ch(1)}return ch(0)}
-   case authSql.creditRefund:{this.credits.set(p[1],(this.credits.get(p[1])||0)+1);return ch(1)}
-   case authSql.creditDeleteZero:{const b=this.credits.get(p[0]);if(b!==undefined&&b<=0){this.credits.delete(p[0]);return ch(1)}return ch(0)}
-   case authSql.paidSpendInsert:{if(this.spends.has(p[0]))return ch(0);if((this.credits.get(p[4])||0)<1)return ch(0);this.spends.set(p[0],{key:p[0],account_id:p[1],status:'pending',created_at:p[2],resolved_at:null,resolver:p[3]});return ch(1)}
+   case authSql.creditSpendGuarded:{const r=this.spends.get(p[4]);const b=this.credits.get(p[2])||0;if(r&&r.resolver===p[5]&&b>=p[3]){this.credits.set(p[2],b-p[0]);return ch(1)}return ch(0)}
+   case authSql.creditDelete:{const b=this.credits.get(p[0]);if(b!==undefined&&b<=p[1]){this.credits.delete(p[0]);return ch(1)}return ch(0)}
+   case authSql.paidSpendInsert:{if(this.spends.has(p[0]))return ch(0);if(!this.credits.has(p[4])||(this.credits.get(p[4])||0)<p[5])return ch(0);this.spends.set(p[0],{key:p[0],account_id:p[1],status:'pending',created_at:p[2],resolved_at:null,resolver:p[3]});return ch(1)}
+   case authSql.freeSpendInsert:{if(this.spends.has(p[0]))return ch(0);if((this.freeUsed.get(p[4])||0)>=p[5])return ch(0);this.spends.set(p[0],{key:p[0],account_id:p[1],status:'pending',created_at:p[2],resolved_at:null,resolver:p[3]});return ch(1)}
+   case authSql.spendMetaInsert:{const r=this.spends.get(p[3]);if(!r||r.resolver!==p[4]||this.meta.has(p[0]))return ch(0);this.meta.set(p[0],{key:p[0],kind:p[1],amount:p[2]});return ch(1)}
+   case authSql.freeShieldUse:{const r=this.spends.get(p[2]);if(!r||r.resolver!==p[3])return ch(0);this.freeUsed.set(p[0],(this.freeUsed.get(p[0])||0)+1);return ch(1)}
+   case authSql.freeShieldRefundGuarded:{const r=this.spends.get(p[2]);const m=this.meta.get(p[4]);const u=this.freeUsed.get(p[1])||0;if(r&&r.resolver===p[3]&&m?.kind==='free_shield'&&u>0){this.freeUsed.set(p[1],u-1);return ch(1)}return ch(0)}
+   case authSql.deleteAccountSpendMeta:{let n=0;for(const [k,r] of this.spends)if(r.account_id===p[0]&&this.meta.delete(k))n++;return ch(n)}
+   case authSql.deleteAccountFreeShields:{return ch(this.freeUsed.delete(p[0])?1:0)}
+   case authSql.deleteAccountIntents:{const n=this.intents.length;this.intents=this.intents.filter(r=>r.account_id!==p[0]);return ch(n-this.intents.length)}
+   case authSql.tombstoneAccount:{const r=this.accounts.find(a=>a.id===p[0]);if(r){r.email_hmac='deleted:'+r.id;r.pepper_id='';return ch(1)}return ch(0)}
    case authSql.paidSpendClaim:{const r=this.spends.get(p[3]);if(r&&r.status==='pending'){r.status=p[0];r.resolved_at=p[1];r.resolver=p[2];return ch(1)}return ch(0)}
-   case authSql.paidSpendRefundGuarded:{const r=this.spends.get(p[2]);if(r&&r.resolver===p[3]){this.credits.set(p[1],(this.credits.get(p[1])||0)+1);return ch(1)}return ch(0)}
+   case authSql.paidSpendRefundGuarded:{const r=this.spends.get(p[3]);const m=this.meta.get(p[0]);if(r&&r.resolver===p[4]&&m?.kind!=='free_shield'){this.credits.set(p[2],(this.credits.get(p[2])||0)+(m?.amount??1));return ch(1)}return ch(0)}
    case authSql.deleteAccountSessions:{const n=this.sessions.length;this.sessions=this.sessions.filter(r=>r.account_id!==p[0]);return ch(n-this.sessions.length)}
    case authSql.deleteAccountLinks:{const n=this.links.length;this.links=this.links.filter(r=>r.account_id!==p[0]);return ch(n-this.links.length)}
    case authSql.deleteAccountSpends:{let n=0;for(const [k,r] of this.spends)if(r.account_id===p[0]){this.spends.delete(k);n++}return ch(n)}
    case authSql.deleteAccountRates:{const had=this.rates.delete(p[0]);return ch(had?1:0)}
-   case authSql.deleteAccount:{const b=this.credits.get(p[0]);if(b!==undefined&&b>0)throw new Error('credits_remaining');const n=this.accounts.length;this.accounts=this.accounts.filter(a=>a.id!==p[0]);return ch(n-this.accounts.length)}
   }
   throw new Error('unexpected sql: '+sql);
  }
@@ -64,6 +70,7 @@ class MockD1{
    case authSql.sessionSelect:{const r=this.sessions.find(x=>x.token_hash===p[0]&&x.revoked_at===null&&x.expires_at>p[1]);return r?{account_id:r.account_id,expires_at:r.expires_at}:null}
    case authSql.creditsSelect:{return this.credits.has(p[0])?{balance:this.credits.get(p[0])}:null}
    case authSql.accountHmac:{const r=this.accounts.find(a=>a.id===p[0]);return r?{email_hmac:r.email_hmac}:null}
+   case authSql.freeShieldsUsed:{return this.freeUsed.has(p[0])?{used:this.freeUsed.get(p[0])}:null}
    case authSql.paidSpendStatus:{const r=this.spends.get(p[0]);return r?{status:r.status}:null}
   }
   throw new Error('unexpected sql: '+sql);
@@ -300,16 +307,14 @@ describe('account-bound sessions, credits and sign-out',()=>{
   expect((await worker.fetch(authed('/v1/auth/session','GET',session),makeEnv(db))).status).toBe(401);
   expect((await worker.fetch(authed('/v1/auth/session','DELETE',session),makeEnv(db))).status).toBe(401);
  });
- it('sign-out-all is the only bulk revocation and it revokes every session of the account',async()=>{
+ it('has no sign-out-all route; signing out one device leaves the others signed in',async()=>{
   const db=new MockD1();
   const first=await signIn(db,'one@example.com');
   const second=await signIn(db,'one@example.com'); // same account, second device
-  const other=await signIn(db,'two@example.com');
-  expect(db.sessions.filter(s=>s.revoked_at===null)).toHaveLength(3);
-  expect((await worker.fetch(authed('/v1/auth/sessions','DELETE',first.session),makeEnv(db))).status).toBe(200);
+  expect((await worker.fetch(authed('/v1/auth/sessions','DELETE',first.session),makeEnv(db))).status).toBe(404);
+  expect((await worker.fetch(authed('/v1/auth/session','DELETE',first.session),makeEnv(db))).status).toBe(200);
   expect((await worker.fetch(authed('/v1/auth/session','GET',first.session),makeEnv(db))).status).toBe(401);
-  expect((await worker.fetch(authed('/v1/auth/session','GET',second.session),makeEnv(db))).status).toBe(401);
-  expect((await worker.fetch(authed('/v1/auth/session','GET',other.session),makeEnv(db))).status).toBe(200);
+  expect((await worker.fetch(authed('/v1/auth/session','GET',second.session),makeEnv(db))).status).toBe(200);
  });
  it('expires sessions at the 30-day boundary',async()=>{
   const db=new MockD1();
@@ -358,17 +363,21 @@ describe('account deletion',()=>{
   expect(res.status).toBe(409);expect((await j(res)).error).toBe('credits_remaining');
   expect(db.accounts).toHaveLength(1);
  });
- it('atomically removes a zero-balance credits row with the rest of the account',async()=>{
+ it('deletes an account on our side: tombstones the row, removes sessions, links, spends and balance',async()=>{
   const db=new MockD1();
   const {session}=await signIn(db);
-  const id=db.accounts[0].id;
-  db.credits.set(id,0); // paid once, spent everything
+  const id=db.accounts[0].id,hmac=db.accounts[0].email_hmac;
+  db.credits.set(id,0);db.freeUsed.set(id,2);
   db.spends.set('paid:'+id+':x',{key:'paid:'+id+':x',account_id:id,status:'spent',created_at:T0,resolved_at:T0});
+  db.meta.set('paid:'+id+':x',{key:'paid:'+id+':x',kind:'credit',amount:2});
   const res=await worker.fetch(authed('/v1/auth/account','DELETE',session),makeEnv(db));
   expect(res.status).toBe(200);
-  expect(db.accounts).toHaveLength(0);expect(db.sessions).toHaveLength(0);expect(db.links).toHaveLength(0);expect(db.spends.size).toBe(0);
+  expect(db.accounts).toHaveLength(1);expect(db.accounts[0].email_hmac).toBe('deleted:'+id);expect(JSON.stringify(db.accounts)).not.toContain(hmac);
+  expect(db.sessions).toHaveLength(0);expect(db.links).toHaveLength(0);expect(db.spends.size).toBe(0);expect(db.meta.size).toBe(0);expect(db.freeUsed.has(id)).toBe(false);
   expect(db.credits.has(id)).toBe(false);
   expect((await worker.fetch(authed('/v1/auth/session','GET',session),makeEnv(db))).status).toBe(401);
+  // Signing up again with the same email creates a fresh account.
+  const again=await signIn(db);expect(again.ok).toBe(true);expect(db.accounts).toHaveLength(2);expect(again.free_shields).toBe(3);
  });
 });
 
@@ -376,10 +385,11 @@ describe('paid gameplay spend',()=>{
  it('spends one credit atomically, forwards a marked request to the Durable Object and settles spent',async()=>{
   const db=new MockD1();
   const {session}=await signIn(db);
-  db.credits.set(db.accounts[0].id,2);
+  db.credits.set(db.accounts[0].id,3);
   const res=await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db));
   expect(res.status).toBe(201);
-  expect(res.headers.get('x-account-credits')).toBe('1');
+  expect(res.headers.get('x-account-credits')).toBe('1'); // a belief costs 2 credits by default
+  expect(res.headers.get('x-free-shields')).toBe('3');
   expect(db.credits.get(db.accounts[0].id)).toBe(1);
   expect(doCalls).toHaveLength(1);
   expect(doCalls[0].req.headers.get('x-paid-move')).toBe('1');
@@ -389,7 +399,7 @@ describe('paid gameplay spend',()=>{
  it('does not double-spend on an idempotent replay',async()=>{
   const db=new MockD1();
   const {session}=await signIn(db);
-  db.credits.set(db.accounts[0].id,2);
+  db.credits.set(db.accounts[0].id,3);
   await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db));
   const replay=await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db));
   expect(replay.status).toBe(201);
@@ -406,17 +416,17 @@ describe('paid gameplay spend',()=>{
  it('refunds and marks the spend refunded when the Durable Object write fails',async()=>{
   const db=new MockD1();
   const {session}=await signIn(db);
-  db.credits.set(db.accounts[0].id,1);
+  db.credits.set(db.accounts[0].id,2);
   doResponse=()=>new Response('{"error":"boom"}',{status:500});
   const res=await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db));
   expect(res.status).toBe(500);
-  expect(db.credits.get(db.accounts[0].id)).toBe(1);
+  expect(db.credits.get(db.accounts[0].id)).toBe(2);
   const spend=db.spends.get('paid:'+db.accounts[0].id+':idem-key-0000000001')!;
   expect(spend.status).toBe('refunded');
   // a refunded key is consumed: replaying it must not apply a free move
   const retry=await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db));
   expect(retry.status).toBe(409);
-  expect(db.credits.get(db.accounts[0].id)).toBe(1);
+  expect(db.credits.get(db.accounts[0].id)).toBe(2);
  });
  it('recovers a crash between the D1 decrement and the Durable Object call: refund path',async()=>{
   const db=new MockD1();
@@ -451,12 +461,15 @@ describe('paid gameplay spend',()=>{
   expect((await worker.fetch(paidPost('/v1/beliefs',session),makeEnv(db))).status).toBe(401);
   expect(db.credits.get(db.accounts[0].id)).toBe(2);expect(doCalls).toHaveLength(0);
  });
- it('keeps anonymous free play on the device-session path',async()=>{
+ it('refuses every move without an account and never reaches the Durable Object',async()=>{
   const db=new MockD1();
   const res=await worker.fetch(post('/v1/beliefs',{text:'a calm useful belief',alias:'qa'}),makeEnv(db));
-  expect(doCalls).toHaveLength(1);
-  expect(doCalls[0].req.headers.get('x-paid-move')).toBeNull();
-  void res;
+  expect(res.status).toBe(401);expect((await j(res)).error).toBe('account_required');
+  const shield=await worker.fetch(post('/v1/beliefs/00000000-0000-4000-8000-000000000000/protect',{}),makeEnv(db));
+  expect(shield.status).toBe(401);
+  const sess=await worker.fetch(post('/v1/session',{}),makeEnv(db));
+  expect(sess.status).toBe(410);
+  expect(doCalls).toHaveLength(0);
  });
 });
 
@@ -533,19 +546,16 @@ describe('v4 hardening: claim-guarded settle, deletion rollback, pepper ring, ha
   expect(db.credits.get(id)).toBe(0);
   expect(db.spends.get('paid:'+id+':race-key-000000002')!.status).toBe('spent');
  });
- it('rolls the whole deletion batch back when a credit grant races the pre-check',async()=>{
+ it('a credit grant racing deletion stays on the tombstoned account instead of vanishing',async()=>{
   const db=new MockD1();
   const {session}=await signIn(db);
   const id=db.accounts[0].id;
   db.credits.set(id,0);
   db.beforeBatch=()=>db.credits.set(id,5); // a grant lands between the pre-check and the deletion batch
   const res=await worker.fetch(authed('/v1/auth/account','DELETE',session),makeEnv(db));
-  expect(res.status).toBe(409);expect((await j(res)).error).toBe('credits_remaining');
-  expect(db.accounts).toHaveLength(1);
-  expect(db.sessions).toHaveLength(1);
-  expect(db.links.length).toBeGreaterThan(0);
+  expect(res.status).toBe(200);
+  expect(db.accounts[0].email_hmac).toBe('deleted:'+id);
   expect(db.credits.get(id)).toBe(5);
-  expect((await worker.fetch(authed('/v1/auth/session','GET',session),makeEnv(db))).status).toBe(200);
  });
  it('resolves accounts through a two-deep pepper ring and lazily re-keys',async()=>{
   const db=new MockD1();

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#f5f4ef" />
-  <meta name="description" content="Sign in to Doxomachy with an email link. Your paid moves stay with your account." />
+  <meta name="description" content="Sign in to Doxomachy with an email link. Your credits and free shields stay with your account." />
   <title>Account · Doxomachy</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -19,10 +19,10 @@
     <section class="hero" aria-labelledby="account-title">
       <div>
         <p class="kicker">Email sign-in</p>
-        <h1 id="account-title">Your moves,<br />any device.</h1>
+        <h1 id="account-title">Your account,<br />any device.</h1>
       </div>
       <div class="hero-side">
-        <p class="lede">One email link signs you in. No password. Paid moves stay with the account, not the browser.</p>
+        <p class="lede">One email link signs you in. No password. You need an account to add beliefs or shields. Every account gets 3 free shields.</p>
       </div>
     </section>
 
@@ -34,7 +34,7 @@
           <input class="auth-input" id="email" name="email" type="email" required maxlength="254" autocomplete="email" placeholder="you@example.com" />
           <button class="primary" type="submit">Email me a link</button>
         </div>
-        <p class="fine">The link works once, for 15 minutes. Each device stays signed in for 30 days until you sign out.</p>
+        <p class="fine">The link works once, for 15 minutes. Each device stays signed in for 30 days.</p>
       </form>
       <p id="requestStatus" class="eviction-preview" role="status" aria-live="polite"></p>
     </section>
@@ -42,14 +42,14 @@
     <section class="composer" id="sessionPanel" aria-labelledby="session-title" hidden>
       <div class="composer-head"><h2 id="session-title">Signed in</h2></div>
       <dl class="auth-dl">
-        <div><dt>Paid moves</dt><dd id="creditBalance">0</dd></div>
+        <div><dt>Credits</dt><dd id="creditBalance">0</dd></div>
+        <div><dt>Free shields</dt><dd id="freeShieldBalance">0</dd></div>
       </dl>
       <div class="auth-actions">
         <button class="text-button" id="signOut" type="button">Sign out this device</button>
-        <button class="text-button" id="signOutAll" type="button">Sign out all devices</button>
         <button class="text-button auth-danger" id="deleteAccount" type="button">Delete account</button>
       </div>
-      <p class="fine">Paid checkout is not active yet. Moves you buy later will appear here. Deleting an account requires its paid moves to be refunded first.</p>
+      <p class="fine">A belief costs 2 credits; a shield uses a free shield first, then 1 credit. Refunds are handled by email. Deleting your account gives up any unused credits.</p>
       <p id="sessionStatus" class="eviction-preview" role="status" aria-live="polite"></p>
     </section>
   </main>

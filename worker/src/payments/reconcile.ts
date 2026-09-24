@@ -31,6 +31,7 @@
  * Triggered via POST /v1/admin/dodo/reconcile (Bearer DODO_ADMIN_KEY).
  */
 
+import { packByProduct, packByKey } from './catalog';
 import { D1FulfillmentStore, FulfillmentStore } from './store';
 import { fulfillDodoEvent, withPaymentLock, CREDITS_PER_PURCHASE, PRODUCT_PRICE_MINOR, PRODUCT_CURRENCY, DodoWebhookEvent, ProductCatalog, ExpectedContext, LockUnavailable } from './fulfillment';
 import { listPayments, listRefunds, listDisputes, DodoApiError, DodoPaymentSummary } from './dodo-client';
@@ -40,6 +41,7 @@ export interface ReconcileEnv {
   DODO_API_KEY?: string;
   DODO_API_BASE?: string;
   DODO_PRODUCT_ID?: string;
+  DODO_PRODUCT_ID_LARGE?: string;
   DODO_BUSINESS_ID?: string;
 }
 
@@ -65,14 +67,14 @@ const COMPLETED_RETENTION_MS = 7 * 86_400_000; // completed inbox rows pruned af
 const FAILED_RETENTION_MS = 30 * 86_400_000; // failed inbox rows pruned after 30d
 const INBOX_STALE_MS = 60_000;
 
-const catalog = (env: ReconcileEnv): ProductCatalog => (productId: string) =>
-  env.DODO_PRODUCT_ID && productId === env.DODO_PRODUCT_ID ? CREDITS_PER_PURCHASE : null;
+const catalog = (env: ReconcileEnv): ProductCatalog => (productId: string) => packByProduct(env, productId)?.credits ?? null;
 
 const expected = (env: ReconcileEnv): ExpectedContext => ({
   businessId: env.DODO_BUSINESS_ID || undefined,
   productId: env.DODO_PRODUCT_ID || undefined,
   currency: PRODUCT_CURRENCY,
   amountMinor: PRODUCT_PRICE_MINOR,
+  amountFor: (productId: string) => packByProduct(env, productId)?.amountMinor ?? null,
 });
 
 /** Re-fulfill a stored/synthetic event through the normal pipeline. */

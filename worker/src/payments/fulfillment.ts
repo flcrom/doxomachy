@@ -47,7 +47,7 @@
 
 import { FulfillmentStore, DodoOrder, RefundRecord, UNMATCHED_SUBJECT } from './store';
 
-export const CREDITS_PER_PURCHASE = 5; // $5 USD for five non-expiring moves (PRODUCTION-CHECKLIST.md)
+export const CREDITS_PER_PURCHASE = 10; // small pack: $5 USD for ten non-expiring credits (see catalog.ts)
 export const PRODUCT_PRICE_MINOR = 500; // 500 minor units = $5.00 USD
 export const PRODUCT_CURRENCY = 'USD';
 
@@ -70,6 +70,8 @@ export interface ExpectedContext {
   productId?: string; // server-configured product id for the pack
   currency: string;
   amountMinor: number;
+  /** Per-product price in minor units; when set, it replaces productId/amountMinor. */
+  amountFor?: (productId: string) => number | null;
 }
 
 export interface FulfillmentContext {
@@ -245,11 +247,12 @@ const grantViolation = (order: DodoOrder, data: Record<string, unknown>, busines
     // configuration at checkout time) is never used to satisfy the check.
     if (businessId !== expected.businessId) return `business_mismatch:${businessId ?? 'missing'}`;
   }
-  if (expected.productId && order.product_id !== expected.productId) return `product_mismatch:${order.product_id}`;
+  const priced = expected.amountFor ? expected.amountFor(order.product_id) : null;
+  if (expected.amountFor ? priced === null : expected.productId && order.product_id !== expected.productId) return `product_mismatch:${order.product_id}`;
   const currency = str(data.currency) ?? order.currency;
   if (currency !== expected.currency) return `currency_mismatch:${currency ?? 'missing'}`;
   const total = num(data.total_amount) ?? order.total_amount;
-  if (total !== expected.amountMinor) return `amount_mismatch:${total ?? 'missing'}`;
+  if (total !== (priced ?? expected.amountMinor)) return `amount_mismatch:${total ?? 'missing'}`;
   return null;
 };
 

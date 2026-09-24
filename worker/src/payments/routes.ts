@@ -21,6 +21,7 @@
  * (credits.subject = account UUID; it reads/spends, this lane only grants).
  */
 
+import { packByProduct, packByKey } from './catalog';
 import { extractWebhookHeaders, verifyWebhook, WebhookConfigError } from './standard-webhooks';
 import { D1FulfillmentStore, CheckoutIntent } from './store';
 import { fulfillDodoEvent, CREDITS_PER_PURCHASE, PRODUCT_PRICE_MINOR, PRODUCT_CURRENCY, DodoWebhookEvent, ProductCatalog, ExpectedContext, LockUnavailable } from './fulfillment';
@@ -32,7 +33,8 @@ export interface DodoEnv extends AuthEnv {
   DODO_API_KEY?: string; // secret: environment-matched key, set with wrangler secret put
   DODO_WEBHOOK_SECRET?: string; // secret: wrangler secret put DODO_WEBHOOK_SECRET (whsec_...)
   DODO_API_BASE?: string; // var: https://test.dodopayments.com while in test mode
-  DODO_PRODUCT_ID?: string; // var: environment-matched product id for the $5 five-move pack
+  DODO_PRODUCT_ID?: string; // var: environment-matched product id for the $5 / 10-credit pack
+  DODO_PRODUCT_ID_LARGE?: string; // var: product id for the $19 / 50-credit pack (optional)
   DODO_RETURN_URL?: string; // var: where the buyer lands after checkout
   DODO_CHECKOUT_ENABLED?: string; // var: 'true' enables session creation; anything else keeps it off
   DODO_BUSINESS_ID?: string; // var: when set, webhooks/grants for any other business are rejected/quarantined
@@ -57,8 +59,7 @@ const json = (value: unknown, status = 200, origin?: string): Response =>
   });
 
 /** Server-side product catalog; webhook/client data is never trusted for credit counts. */
-const catalog = (env: DodoEnv): ProductCatalog => (productId: string) =>
-  env.DODO_PRODUCT_ID && productId === env.DODO_PRODUCT_ID ? CREDITS_PER_PURCHASE : null;
+const catalog = (env: DodoEnv): ProductCatalog => (productId: string) => packByProduct(env, productId)?.credits ?? null;
 
 /** The business/product/currency/amount a settled payment must match before any grant. */
 const expected = (env: DodoEnv): ExpectedContext => ({
@@ -66,6 +67,7 @@ const expected = (env: DodoEnv): ExpectedContext => ({
   productId: env.DODO_PRODUCT_ID || undefined,
   currency: PRODUCT_CURRENCY,
   amountMinor: PRODUCT_PRICE_MINOR,
+  amountFor: (productId: string) => packByProduct(env, productId)?.amountMinor ?? null,
 });
 
 /**
@@ -219,6 +221,11 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
   const idempotencyKey = request.headers.get('idempotency-key') || '';
   if (!IDEMPOTENCY_KEY_RE.test(idempotencyKey)) return json({ error: 'idempotency_key_required' }, 400, env.WEB_ORIGIN);
 
+  let requested: unknown;
+  try { requested = read.body ? JSON.parse(read.body)?.pack : undefined; } catch { requested = undefined; }
+  const pack = packByKey(env, requested);
+  if (!pack) return json({ error: 'pack_unavailable' }, 400, env.WEB_ORIGIN);
+
   const store = new D1FulfillmentStore(env.DB);
   const intentKey = `${accountId}:${idempotencyKey}`;
   const now = Date.now();
@@ -265,8 +272,8 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
       session_id: null,
       checkout_url: null,
       payment_id: null,
-      product_id: env.DODO_PRODUCT_ID,
-      credits: CREDITS_PER_PURCHASE,
+      product_id: pack.productId,
+      credits: pack.credits,
       error: null,
       created_at: now,
       updated_at: now,
@@ -282,13 +289,13 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
   let session;
   try {
     session = await createCheckoutSession(env.DODO_API_BASE, env.DODO_API_KEY, {
-      product_cart: [{ product_id: env.DODO_PRODUCT_ID, quantity: 1 }],
+      product_cart: [{ product_id: intent.product_id, quantity: 1 }],
       return_url: env.DODO_RETURN_URL,
       // metadata carries ONLY linkage (never amounts): the entitlement subject
       // and the intent, so webhooks and reconciliation can re-attach. Dodo
       // documents no checkout idempotency key, so this correlation plus the
       // persisted intent is the recovery path.
-      metadata: { account_id: accountId, intent_key: intentKey, product_id: env.DODO_PRODUCT_ID },
+      metadata: { account_id: accountId, intent_key: intentKey, product_id: intent.product_id },
     });
   } catch (err) {
     if (err instanceof DodoApiError && !err.ambiguous) {
@@ -332,8 +339,8 @@ export const handleCheckoutSession = async (request: Request, env: DodoEnv): Pro
       payment_id: null,
       business_id: env.DODO_BUSINESS_ID ?? null,
       status: 'created',
-      product_id: env.DODO_PRODUCT_ID,
-      credits: CREDITS_PER_PURCHASE,
+      product_id: intent.product_id,
+      credits: intent.credits,
       total_amount: null,
       currency: null,
       quarantine_reason: null,

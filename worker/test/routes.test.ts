@@ -228,7 +228,7 @@ describe('POST /v1/checkout/session', () => {
     expect(calls.n).toBe(1);
     // order + intent persisted, subject is the AUTHENTICATED account
     const order = await store.findOrderBySession('cs_test_new_1');
-    expect(order).toMatchObject({ account_id: TEST_ACCOUNT, credits: 5, status: 'created' });
+    expect(order).toMatchObject({ account_id: TEST_ACCOUNT, credits: 10, status: 'created' });
     const intent = await store.findIntent(`${TEST_ACCOUNT}:idem-key-00000001`);
     expect(intent).toMatchObject({ status: 'created', session_id: 'cs_test_new_1' });
     // retry with the same key: stored outcome, no second upstream call
@@ -332,7 +332,7 @@ describe('POST /v1/checkout/session', () => {
     const report = await runReconciliation(env);
     expect(report.orders_recovered).toBe(1);
     expect(await store.findOrderBySession('cs_test_orphan_1')).toMatchObject({ account_id: TEST_ACCOUNT, status: 'succeeded' });
-    expect(await store.balance(TEST_ACCOUNT)).toBe(5);
+    expect(await store.balance(TEST_ACCOUNT)).toBe(10);
     expect((await store.findIntent(`${TEST_ACCOUNT}:idem-key-00000004`))?.status).toBe('recovered');
   });
 
@@ -402,7 +402,7 @@ describe('POST /v1/checkout/session', () => {
     expect(report.intents_recovered).toBe(1);
     expect((await store.findIntent(`${TEST_ACCOUNT}:idem-key-00000007`))?.status).toBe('recovered');
     expect(await store.findOrderByPayment('pay_timeout')).toMatchObject({ account_id: TEST_ACCOUNT, status: 'succeeded' });
-    expect(await store.balance(TEST_ACCOUNT)).toBe(5);
+    expect(await store.balance(TEST_ACCOUNT)).toBe(10);
   });
 
   it('a fresh pending intent (in flight right now) returns 409', async () => {

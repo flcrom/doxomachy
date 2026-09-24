@@ -79,16 +79,16 @@ describe('worker instrumentation',()=>{
     const {worker}=await import('../src/index');
     const origin='https://doxomachy.vercel.app';
     const proxied=await worker.fetch(new Request('https://api.example/v1/mind',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
-    expect(proxied.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
+    expect(proxied.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits, x-free-shields');
     const direct=await worker.fetch(new Request('https://api.example/health',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
-    expect(direct.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
+    expect(direct.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits, x-free-shields');
     expect(direct.headers.get('x-correlation-id')).toMatch(/^[0-9a-f-]{36}$/);
     const earlyError=await worker.fetch(new Request('https://api.example/nope',{headers:{Origin:origin}}),envWith(()=>new Response('{}')) as any);
     expect(earlyError.status).toBe(404);
-    expect(earlyError.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
+    expect(earlyError.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits, x-free-shields');
     const tooLarge=await worker.fetch(new Request('https://api.example/v1/session',{method:'POST',headers:{Origin:origin,'content-length':'999999'}}),envWith(()=>new Response('{}')) as any);
     expect(tooLarge.status).toBe(413);
-    expect(tooLarge.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits');
+    expect(tooLarge.headers.get('access-control-expose-headers')).toBe('x-correlation-id, x-account-credits, x-free-shields');
     vi.restoreAllMocks();
   });
 
@@ -154,9 +154,8 @@ describe('Durable Object readiness and signals',()=>{
     vi.spyOn(console,'log').mockImplementation(()=>{});
     const err=vi.spyOn(console,'error').mockImplementation(()=>{});
     const mind=await makeMind();
-    // seed one belief through a session + move
-    const session=await (await mind.fetch(new Request('https://mind.internal/v1/session',{method:'POST',headers:{'x-issuance-key':'0123456789abcdef0123456789abcdef'}}))).json() as any;
-    await mind.fetch(new Request('https://mind.internal/v1/beliefs',{method:'POST',headers:{'content-type':'application/json','x-session-id':session.token,'idempotency-key':'abcdef0123456789'},body:JSON.stringify({text:'Calm systems deserve quiet attention.'})}));
+    // seed one belief through an account move (as forwarded by the Worker)
+    await mind.fetch(new Request('https://mind.internal/v1/beliefs',{method:'POST',headers:{'content-type':'application/json','x-paid-move':'1','x-session-id':'paid:acct-1','idempotency-key':'abcdef0123456789'},body:JSON.stringify({text:'Calm systems deserve quiet attention.'})}));
     const diary=await mind.fetch(new Request('https://mind.internal/v1/diary',{method:'POST',headers:{'x-internal-scheduled':'1'}}));
     expect(diary.status).toBe(502);
     expect(err.mock.calls.some(c=>String(c[0]).includes('ai_unavailable'))).toBe(true);

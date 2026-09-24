@@ -237,7 +237,11 @@ test('rollback removes every 0002 table',()=>{
  assert.ok(names.includes('credits')); // 0001 tables untouched
 });
 
+// The spend, refund and deletion statements changed with 0005 (credit
+// amounts, free shields, tombstoned deletion); worker/test/account-model.test.ts
+// runs the current ones against the real migrated schema.
+const RETIRED=new Set(['creditSpendGuarded','creditDeleteZero','deleteAccount','paidSpendInsert','paidSpendRefundGuarded']);
 test('drift guard: production auth.ts carries these exact statements',()=>{
  const src=fs.readFileSync(path.join(root,'worker/src/auth.ts'),'utf8');
- for(const [name,sql] of Object.entries(SQL))assert.ok(src.includes(`'${sql}'`)||src.includes(`"${sql}"`),`${name} drifted from auth.ts`);
+ for(const [name,sql] of Object.entries(SQL).filter(([n])=>!RETIRED.has(n)))assert.ok(src.includes(`'${sql}'`)||src.includes(`"${sql}"`),`${name} drifted from auth.ts`);
 });

@@ -32,3 +32,6 @@
 textarea[aria-invalid="true"]{border-width:2px}
 @media(max-width:860px){.actions{gap:16px}}
 @media(max-width:560px){.footer{flex-wrap:wrap;gap:4px 16px;padding-block:20px}.footer>span:last-child{display:flex;flex-wrap:wrap;align-items:center;column-gap:6px}}
+
+/* The hero's 1,000 set like selected text: page colors inverted. */
+.inverse{background:var(--ink,#111);color:var(--paper,#f5f4ef);padding:0 .08em;box-decoration-break:clone;-webkit-box-decoration-break:clone}

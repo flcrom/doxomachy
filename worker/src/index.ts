@@ -1,11 +1,13 @@
 import llama3Tokenizer from 'llama3-tokenizer-js';
 import {correlationId,logEvent,routeTemplate,withCorrelation,Operation,Outcome} from './observability';
 import {makePublicSnapshot,publishIfNewer,snapshotLag} from './public-snapshot';
-import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, refundAccountCredit, requireAccount, settleAccountSpend, spendAccountCredit, accountCreditBalance, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
+import { allowedOrigins as authAllowedOrigins, handleAuth, isValidTokenFormat, reconcileAccountSpends, refundAccountCredit, requireAccount, settleAccountSpend, spendAccountMove, accountBalances, reconcileStaleSpends, pruneAuthData, authConfigured } from './auth';
 import { handleDodoWebhook, handleCheckoutSession, handleDodoReconcile } from './payments/routes';
 
-export interface Env { MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
-type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number};
+export interface Env { BELIEF_CREDIT_COST?: string; SHIELD_CREDIT_COST?: string; FREE_SHIELDS?: string; PROTECT_NEW_UNTIL_DIARY?: string; SHIELD_DECAY?: string; MIND: DurableObjectNamespace; DB: D1Database; AI: Ai; PUBLIC_SNAPSHOT?:R2Bucket; WEB_ORIGIN: string; WEB_ORIGINS?: string; DIARY_MODEL: string; RESEND_API_KEY?: string; AUTH_EMAIL_PEPPER?: string; AUTH_EMAIL_PEPPER_PREVIOUS?: string; AUTH_FROM?: string; WEB_ORIGIN_EXTRA?: string; DODO_API_KEY?: string; DODO_WEBHOOK_SECRET?: string; DODO_API_BASE?: string; DODO_PRODUCT_ID?: string; DODO_RETURN_URL?: string; DODO_CHECKOUT_ENABLED?: string; DODO_BUSINESS_ID?: string; DODO_ADMIN_KEY?: string }
+// shields = 1 (the belief itself) + shields added in the last SHIELD_TTL.
+// shieldTimes holds when each added shield was placed; it never leaves the DO.
+type Belief={id:string;text:string;alias:string;shields:number;createdAt:number;tokens:number;shieldTimes?:number[]};
 type Counter={count:number;window:number};
 type Session={moves:number;day:string;createdAt:number;lastSeen:number;burst:Counter};
 type Idempotent={status:number;body:unknown;createdAt:number};
@@ -21,7 +23,7 @@ const securityHeaders={
  'referrer-policy':'no-referrer','permissions-policy':'camera=(), microphone=(), geolocation=()',
  'content-security-policy':"default-src 'none'; frame-ancestors 'none'",'cache-control':'no-store'
 };
-const headers=(origin?:string)=>({...securityHeaders,...(origin?{'access-control-allow-origin':origin,'access-control-expose-headers':'x-correlation-id, x-account-credits','vary':'Origin'}:{})});
+const headers=(origin?:string)=>({...securityHeaders,...(origin?{'access-control-allow-origin':origin,'access-control-expose-headers':'x-correlation-id, x-account-credits, x-free-shields','vary':'Origin'}:{})});
 const json=(value:unknown,status=200,origin?:string)=>new Response(JSON.stringify(value),{status,headers:headers(origin)});
 const clean=(value:unknown,max=120)=>typeof value==='string'?value.normalize('NFKC').replace(/[\u0000-\u001f\u007f]/g,'').trim().slice(0,max):'';
 const unsafeInput=(s:string)=>/https?:\/\/|www\.|\b(?:kill|suicide|rape|doxx?|password|api[_ -]?key|credit card)\b|(?:ignore|override|disregard).{0,40}(?:instructions?|prompt|system)|(?:system|developer)\s*(?:message|prompt)|<\/?(?:system|assistant|tool)>/i.test(s);
@@ -35,6 +37,38 @@ function dayWindow(dayKey:string):[number,number]|null{
  if(!Number.isSafeInteger(start)||utcDay(start)!==dayKey)return null;
  return [start,start+DAY];
 }
+// Move prices in credits (configuration; the owner's pricing answer is pending).
+const creditCost=(raw:string|undefined,fallback:number)=>{const n=Number(raw);return Number.isSafeInteger(n)&&n>=1&&n<=1000?n:fallback};
+export const moveCosts=(env:Env)=>({belief:creditCost(env.BELIEF_CREDIT_COST,2),shield:creditCost(env.SHIELD_CREDIT_COST,1)});
+// Capacity eviction: fewest shields first, oldest first on ties. With a
+// cutoff (PROTECT_NEW_UNTIL_DIARY), beliefs created after the most recent
+// 00:30 UTC diary cannot be evicted; if only protected beliefs could make
+// room, the new belief is refused (the caller refunds the spend).
+export function planEviction(existing:Belief[],incoming:Belief,protectedSince:number|null):{kept:Belief[];evicted:Belief[]}|null{
+ const all=[...existing,incoming];let total=all.reduce((n,b)=>n+b.tokens,0);const evicted:Belief[]=[];
+ const candidates=all.filter(b=>b!==incoming&&(protectedSince===null||b.createdAt<=protectedSince)).sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt);
+ // Unprotected: the incoming belief (1 shield, newest) competes like any other.
+ if(protectedSince===null){candidates.push(incoming);candidates.sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt)}
+ while(total>1000){const gone=candidates.shift();if(!gone)return null;evicted.push(gone);total-=gone.tokens}
+ if(evicted.includes(incoming)&&protectedSince!==null)return null;
+ const out=new Set(evicted);return {kept:all.filter(b=>!out.has(b)),evicted};
+}
+// Start (epoch ms) of the current diary cycle: the latest 00:30 UTC at or before now.
+export function lastDiaryCutoff(now:number){const d=new Date(now);let t=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate(),0,30);if(t>now)t-=DAY;return t}
+export const SHIELD_TTL=7*86_400_000;
+// Drops shields older than SHIELD_TTL and recomputes each belief's count.
+// Beliefs from before decay existed get their current shields dated now, so
+// they start the same 7-day clock as everything else.
+export function decayShields(beliefs:Belief[],now:number,enabled=true){
+ let changed=false;
+ for(const b of beliefs){
+  if(!Array.isArray(b.shieldTimes)){b.shieldTimes=Array(Math.max(0,b.shields-1)).fill(now);changed=true}
+  if(enabled){const live=b.shieldTimes.filter(t=>now-t<SHIELD_TTL);if(live.length!==b.shieldTimes.length){b.shieldTimes=live;changed=true}}
+  const count=1+b.shieldTimes.length;if(b.shields!==count){b.shields=count;changed=true}
+ }
+ return changed;
+}
+const publicBelief=({shieldTimes,...rest}:Belief)=>rest;
 const mindStub=(env:Env)=>env.MIND.get(env.MIND.idFromName('public-mind'));
 // Exact-match allowlist: auth's canonical WEB_ORIGIN + WEB_ORIGIN_EXTRA, plus realtime's WEB_ORIGINS list. Both current hosts must be listed; anything else is rejected.
 const allowedOrigins=(env:Env)=>new Set([...authAllowedOrigins(env),...(env.WEB_ORIGINS||'').split(',').map(x=>x.trim()).filter(Boolean)]);
@@ -142,7 +176,8 @@ async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionCon
    const authResponse=await handleAuth(request,env,origin||undefined,json,reconcile);
    if(authResponse)return authResponse;
   }
-  if(url.pathname==='/v1/session'&&request.method==='POST')return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
+  // Anonymous sessions and free daily moves are gone: every move needs an account.
+  if(url.pathname==='/v1/session'&&request.method==='POST')return json({error:'account_required'},410,origin||undefined);
   if(url.pathname==='/v1/mind'&&request.method==='GET'){
    // Anonymous public reads are byte-identical for everyone (no session, no
    // moves), so they are served from the per-POP Cache API with a ~2s TTL
@@ -173,28 +208,29 @@ async function handleRequest(request:Request,env:Env,id:string,ctx?:ExecutionCon
    return mindStub(env).fetch(new Request(request.url,{method:'GET',headers:realtimeHeaders}));
   }
   if((url.pathname==='/v1/beliefs'||/^\/v1\/beliefs\/[^/]+\/protect$/.test(url.pathname))&&request.method==='POST'){
+   // Every move needs a signed-in account. The account UUID comes only from
+   // the verified session bearer; any client-supplied subject is ignored.
    const bearer=(request.headers.get('authorization')||'').replace(/^Bearer /,'');
-   if(isValidTokenFormat(bearer)){
-    // Authenticated paid move: the account UUID comes only from the verified
-    // session bearer; any client-supplied subject/clientId is ignored.
-    const account=await requireAccount(request,env);
-    if(!account)return json({error:'unauthorized'},401,origin||undefined);
-    await reconcile(account.accountId);
-    let paidIdem=request.headers.get('idempotency-key')||'';
-    if(!/^[A-Za-z0-9_-]{16,100}$/.test(paidIdem))paidIdem=crypto.randomUUID()+crypto.randomUUID().replaceAll('-','');
-    const spend=await spendAccountCredit(env,account.accountId,paidIdem,Date.now(),id);
-    if(!spend.ok)return json({error:spend.error},spend.status,origin||undefined);
-    forwarded.set('x-paid-move','1');
-    forwarded.set('x-session-id','paid:'+account.accountId);
-    forwarded.set('idempotency-key',paidIdem);
-    const paidResponse=await mindStub(env).fetch(routeRequest(request,forwarded));
-    if(paidResponse.status>=400){if(!spend.replay)await refundAccountCredit(env,account.accountId,paidIdem,Date.now(),id)}
-    else await settleAccountSpend(env,account.accountId,paidIdem,'spent',Date.now(),id);
-    const out=addCors(paidResponse,origin);
-    out.headers.set('x-account-credits',String(await accountCreditBalance(env,account.accountId)));
-    return out;
-   }
-   return addCors(await mindStub(env).fetch(routeRequest(request,forwarded)),origin);
+   if(!isValidTokenFormat(bearer))return json({error:'account_required'},401,origin||undefined);
+   const account=await requireAccount(request,env);
+   if(!account)return json({error:'unauthorized'},401,origin||undefined);
+   await reconcile(account.accountId);
+   let paidIdem=request.headers.get('idempotency-key')||'';
+   if(!/^[A-Za-z0-9_-]{16,100}$/.test(paidIdem))paidIdem=crypto.randomUUID()+crypto.randomUUID().replaceAll('-','');
+   const move=url.pathname==='/v1/beliefs'?'belief':'shield',costs=moveCosts(env);
+   const spend=await spendAccountMove(env,account.accountId,paidIdem,Date.now(),move,costs[move],id);
+   if(!spend.ok)return json({error:spend.error},spend.status,origin||undefined);
+   forwarded.set('x-paid-move','1');
+   forwarded.set('x-session-id','paid:'+account.accountId);
+   forwarded.set('idempotency-key',paidIdem);
+   const paidResponse=await mindStub(env).fetch(routeRequest(request,forwarded));
+   if(paidResponse.status>=400){if(!spend.replay)await refundAccountCredit(env,account.accountId,paidIdem,Date.now(),id)}
+   else await settleAccountSpend(env,account.accountId,paidIdem,'spent',Date.now(),id);
+   const out=addCors(paidResponse,origin);
+   const balances=await accountBalances(env,account.accountId);
+   out.headers.set('x-account-credits',String(balances.credits));
+   out.headers.set('x-free-shields',String(balances.free_shields));
+   return out;
   }
   return json({error:'not_found'},404,origin||undefined);
 }
@@ -230,6 +266,7 @@ export class Mind {
  private async load():Promise<MindState>{
   if(!this.cache)this.cache=(await this.state.storage.get<MindState>('mind'))||{beliefs:[],cycle:1,version:0,sessions:{},issuance:{},idempotency:{}};
   if(this.cache.version===undefined)this.cache.version=0;
+  decayShields(this.cache.beliefs,Date.now(),this.env?.SHIELD_DECAY!=='false');
   return this.cache;
  }
  private async ensureDiary(m:MindState){
@@ -238,7 +275,7 @@ export class Mind {
   try{this.diaryRow=await this.env.DB.prepare('SELECT cycle,text,belief_ids,model,created_at FROM diaries ORDER BY created_at DESC LIMIT 1').first()}catch{return}
   m.diary=this.diaryRow;await this.save(m);this.diaryLoaded=true;
  }
- private publicState(m:MindState){return makePublicSnapshot(m)}
+ private publicState(m:MindState){return makePublicSnapshot({...m,beliefs:m.beliefs.map(publicBelief)} as MindState)}
  private repairSnapshot(m:MindState,id:string){
   const snapshot=this.publicState(m),started=Date.now();
   this.snapshotQueue=this.snapshotQueue.then(async()=>{const result=await publishIfNewer(this.env,snapshot);const lag=await snapshotLag(this.env,snapshot.version);logEvent({operation:'durable_object',outcome:result==='failed'?'degraded':'ok',correlationId:id,reason:'snapshot_'+result,durationMs:Date.now()-started,gauges:{snapshot_version:snapshot.version,snapshot_lag:lag.lag??-1}})}).catch(()=>{});
@@ -456,17 +493,8 @@ export class Mind {
   if(request.method==='POST'){try{bodyText=await request.text()}catch{bodyText=''}}
   if(request.method==='GET'){
    const m=await this.load();this.prune(m,now);
-   const token=request.headers.get('x-session-id')||'',s=m.sessions[token];let moves:undefined|number;
-   if(s){if(s.day!==day()){s.day=day();s.moves=5}s.lastSeen=now;moves=s.moves} // in-memory only: no storage write on reads
    await this.ensureDiary(m);this.repairSnapshot(m,id);
-   return json({beliefs:m.beliefs,cycle:m.cycle,version:m.version||0,moves,diary:m.diary??null});
-  }
-  if(url.pathname==='/v1/session'&&request.method==='POST'){
-   return this.enqueue(async()=>{
-    const m=await this.load();this.prune(m,now);
-    const issuanceKey=request.headers.get('x-issuance-key')||'';if(!/^[0-9a-f]{32}$/.test(issuanceKey))return json({error:'invalid_client'},400);const [ok,c]=counterOk(m.issuance[issuanceKey],10,60*60_000,now);m.issuance[issuanceKey]=c;if(!ok){await this.save(m);logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'session_issuance_rate_limited'});return json({error:'rate_limited'},429)}
-    const sid=crypto.randomUUID()+crypto.randomUUID().replaceAll('-','');m.sessions[sid]={moves:5,day:day(),createdAt:now,lastSeen:now,burst:{count:0,window:now}};await this.save(m);return json({token:sid,moves:5,expiresIn:SESSION_TTL/1000},201);
-   },id);
+   return json({beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version||0,diary:m.diary??null});
   }
   if(url.pathname==='/v1/diary'){
    if(request.headers.get('x-internal-scheduled')!=='1')return json({error:'not_found'},404);
@@ -474,32 +502,29 @@ export class Mind {
   }
   return this.enqueue(async()=>{
    const m=await this.load();this.prune(m,now);
-   // x-paid-move is set only by the Worker after a successful D1 credit
-   // spend; clients cannot reach this header through the Worker's forwarder.
+   // x-paid-move is set only by the Worker after a successful D1 spend (a
+   // credit or a free shield); clients cannot reach this header through the
+   // Worker's forwarder. There are no anonymous moves.
    const paid=request.headers.get('x-paid-move')==='1';
    const token=request.headers.get('x-session-id')||'';
-   let session:Session|undefined;
-   if(!paid){
-    session=m.sessions[token];if(!session||now-session.lastSeen>SESSION_TTL)return json({error:'unauthorized'},401);
-    if(session.day!==day()){session.day=day();session.moves=5}session.lastSeen=now;
-    const [burstOk,burst]=counterOk(session.burst,10,BURST_MS,now);session.burst=burst;if(!burstOk){await this.save(m);logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'burst_rate_limited'});return json({error:'rate_limited'},429)}
-   }
+   if(!paid||!token.startsWith('paid:'))return json({error:'account_required'},401);
    const idem=clean(request.headers.get('idempotency-key'),100);if(!/^[A-Za-z0-9_-]{16,100}$/.test(idem))return json({error:'idempotency_key_required'},400);
    const idemKey=token+':'+idem;if(m.idempotency[idemKey]){const hit=m.idempotency[idemKey];return json(hit.body,hit.status)}
-   if(!paid&&session!.moves<=0){logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'quota_exhausted'});return json({error:'no_moves'},402)}
    if(url.pathname==='/v1/beliefs'){
     let body:any;try{body=parseJsonBody(request.headers.get('content-type')||'',bodyText)}catch(e:any){return json({error:e.message==='too_large'?'payload_too_large':'invalid_json'},e.message==='too_large'?413:400)}
     const text=clean(body?.text),alias=clean(body?.alias||'anonymous',20);
     if(text.length<8||text.length>120)return json({error:'invalid_belief'},400);
     if(unsafeInput(text)||unsafeInput(alias)){logEvent({operation:'durable_object',outcome:'degraded',correlationId:id,reason:'moderation_rejected'});return json({error:'invalid_belief'},400)}
     const tokens=llama3Tokenizer.encode(text,{bos:false,eos:false}).length;if(tokens>1000)return json({error:'belief_too_large'},400);
-    const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',shields:1,createdAt:now,tokens};m.beliefs.push(belief);const evicted:Belief[]=[];
-    while(m.beliefs.reduce((n,b)=>n+b.tokens,0)>1000){m.beliefs.sort((a,b)=>a.shields-b.shields||a.createdAt-b.createdAt);const gone=m.beliefs.shift();if(gone)evicted.push(gone)}
-    if(session)session.moves--;m.version=(m.version||0)+1;const bodyOut={belief,evicted,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session?session.moves:undefined};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);
+    const belief:Belief={id:crypto.randomUUID(),text,alias:alias||'anonymous',shields:1,createdAt:now,tokens,shieldTimes:[]};
+    const plan=planEviction(m.beliefs,belief,this.env.PROTECT_NEW_UNTIL_DIARY==='true'?lastDiaryCutoff(now):null);
+    if(!plan)return json({error:'mind_full_until_diary'},409);
+    m.beliefs=plan.kept;const evicted=plan.evicted;
+    m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(belief),evicted:evicted.map(publicBelief),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:201,body:bodyOut,createdAt:now};await this.save(m);
     if(evicted.length)logEvent({operation:'durable_object',outcome:'ok',correlationId:id,reason:'capacity_eviction',gauges:{evicted:evicted.length,tokens_used:m.beliefs.reduce((n,b)=>n+b.tokens,0)}});
     this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut,201);
    }
-   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);b.shields++;if(session)session.moves--;m.version=(m.version||0)+1;const bodyOut={belief:b,mind:{beliefs:m.beliefs,cycle:m.cycle,version:m.version},moves:session?session.moves:undefined};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut)}
+   const match=url.pathname.match(/^\/v1\/beliefs\/([0-9a-f-]{36})\/protect$/);if(match){const b=m.beliefs.find(x=>x.id===match[1]);if(!b)return json({error:'not_found'},404);(b.shieldTimes||=[]).push(now);b.shields=1+b.shieldTimes.length;m.version=(m.version||0)+1;const bodyOut={belief:publicBelief(b),mind:{beliefs:m.beliefs.map(publicBelief),cycle:m.cycle,version:m.version}};m.idempotency[idemKey]={status:200,body:bodyOut,createdAt:now};await this.save(m);this.repairSnapshot(m,id);await this.broadcast(m);return json(bodyOut)}
    return json({error:'not_found'},404);
   },id);
  }
@@ -508,4 +533,4 @@ export class Mind {
  webSocketError(socket:WebSocket){try{socket.close(1011,'socket error')}catch{}}
 }
 
-export const policy={clean,unsafeInput,unsafeOutput,counterOk,anonymizeClient,socketCountForClient};
+export const policy={planEviction,lastDiaryCutoff,clean,unsafeInput,unsafeOutput,counterOk,anonymizeClient,socketCountForClient};

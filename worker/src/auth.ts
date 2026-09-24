@@ -8,11 +8,11 @@ import { logEvent } from './observability';
 // The consume writes a per-request consume_key, so a losing concurrent
 // verifier changes nothing and a partial failure rolls the whole batch back
 // (no burned links). Signing in never revokes other sessions: every device
-// keeps its own 30-day session. The only bulk revocation is the explicit
-// sign-out-all call, which revokes every live session of the account.
+// keeps its own 30-day session. There is no sign-out-all: each device signs
+// out on its own (owner iMessage, Sep 24 2026 5:11 PM IST).
 
-export const AUTH_LINK_TTL_MS = 15 * 60_000;          // proposed default: 15-minute links (owner answer pending)
-export const AUTH_SESSION_TTL_MS = 30 * 86_400_000;   // proposed default: 30-day sessions (owner answer pending)
+export const AUTH_LINK_TTL_MS = 15 * 60_000;          // 15-minute single-use links
+export const AUTH_SESSION_TTL_MS = 30 * 86_400_000;   // 30 days per device (owner iMessage, Sep 24 2026 5:11 PM IST)
 export const AUTH_RATE_LIMIT_EMAIL = 5;               // per-hour cap per email address
 export const AUTH_RATE_LIMIT_IP = 60;                 // per-hour backstop per source IP; generous so NAT/campus networks are not locked out
 export const AUTH_RATE_WINDOW_MS = 3_600_000;
@@ -36,6 +36,13 @@ export interface AuthEnv {
   AUTH_EMAIL_PEPPER?: string;
   AUTH_EMAIL_PEPPER_PREVIOUS?: string; // rotation key ring: comma-separated older peppers, oldest resolution order. Each still resolves its accounts, which lazily re-key to the current pepper on next sign-in. Never remove an entry while accounts.pepper_id rows lag the current fingerprint (see runbook); dormant paid accounts may need it indefinitely.
   AUTH_FROM?: string;
+  FREE_SHIELDS?: string;       // free shields per account; default 3
+}
+
+export const DEFAULT_FREE_SHIELDS = 3;
+export function freeShieldAllowance(env: AuthEnv): number {
+  const n = Number(env.FREE_SHIELDS);
+  return Number.isSafeInteger(n) && n >= 0 && n <= 1000 ? n : DEFAULT_FREE_SHIELDS;
 }
 
 export const authSql = {
@@ -43,7 +50,8 @@ export const authSql = {
     'DELETE FROM magic_links WHERE expires_at <= ?',
     'DELETE FROM account_sessions WHERE expires_at <= ?',
     'DELETE FROM auth_rate_limits WHERE ? - window_start >= ?',
-    "DELETE FROM paid_spends WHERE status <> 'pending' AND ? - created_at >= ?"
+    "DELETE FROM paid_spends WHERE status <> 'pending' AND ? - created_at >= ?",
+    'DELETE FROM spend_meta WHERE NOT EXISTS (SELECT 1 FROM paid_spends p WHERE p.key = spend_meta.key)'
   ],
   rateEnsure: 'INSERT OR IGNORE INTO auth_rate_limits (key, count, window_start) VALUES (?, 0, ?)',
   rateReset: 'UPDATE auth_rate_limits SET count = 0, window_start = ? WHERE key = ? AND ? - window_start >= ?',
@@ -59,22 +67,33 @@ export const authSql = {
   linkAccount: 'SELECT account_id FROM magic_links WHERE token_hash = ?',
   sessionSelect: 'SELECT account_id, expires_at FROM account_sessions WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?',
   sessionRevokeOne: 'UPDATE account_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL',
-  sessionRevokeAccount: 'UPDATE account_sessions SET revoked_at = ? WHERE account_id = ? AND revoked_at IS NULL',
   creditsSelect: 'SELECT balance FROM credits WHERE subject = ?',
-  creditSpendGuarded: 'UPDATE credits SET balance = balance - 1, updated_at = ? WHERE subject = ? AND balance >= 1 AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?)',
-  creditRefund: 'UPDATE credits SET balance = balance + 1, updated_at = ? WHERE subject = ?',
-  creditDeleteZero: 'DELETE FROM credits WHERE subject = ? AND balance <= 0',
-  paidSpendInsert: "INSERT OR IGNORE INTO paid_spends (key, account_id, status, created_at, resolved_at, resolver) SELECT ?, ?, 'pending', ?, NULL, ? WHERE (SELECT balance FROM credits WHERE subject = ?) >= 1",
+  creditSpendGuarded: 'UPDATE credits SET balance = balance - ?, updated_at = ? WHERE subject = ? AND balance >= ? AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?)',
+  // Guarded on the balance the user saw: a grant that races deletion stays on
+  // the tombstoned account (visible for a manual refund) instead of vanishing.
+  creditDelete: 'DELETE FROM credits WHERE subject = ? AND balance <= ?',
+  paidSpendInsert: "INSERT OR IGNORE INTO paid_spends (key, account_id, status, created_at, resolved_at, resolver) SELECT ?, ?, 'pending', ?, NULL, ? WHERE (SELECT balance FROM credits WHERE subject = ?) >= ?",
+  freeSpendInsert: "INSERT OR IGNORE INTO paid_spends (key, account_id, status, created_at, resolved_at, resolver) SELECT ?, ?, 'pending', ?, NULL, ? WHERE COALESCE((SELECT used FROM account_free_shields WHERE account_id = ?), 0) < ?",
+  spendMetaInsert: 'INSERT OR IGNORE INTO spend_meta (key, kind, amount) SELECT ?, ?, ? WHERE EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?)',
+  freeShieldUse: 'INSERT INTO account_free_shields (account_id, used, updated_at) SELECT ?, 1, ? WHERE EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?) ON CONFLICT(account_id) DO UPDATE SET used = used + 1, updated_at = excluded.updated_at',
+  freeShieldsUsed: 'SELECT used FROM account_free_shields WHERE account_id = ?',
   paidSpendStatus: 'SELECT status FROM paid_spends WHERE key = ?',
   paidSpendClaim: "UPDATE paid_spends SET status = ?, resolved_at = ?, resolver = ? WHERE key = ? AND status = 'pending'",
-  paidSpendRefundGuarded: 'UPDATE credits SET balance = balance + 1, updated_at = ? WHERE subject = ? AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?)',
+  // Markers written before 0005 have no spend_meta row and mean one credit.
+  paidSpendRefundGuarded: "UPDATE credits SET balance = balance + COALESCE((SELECT amount FROM spend_meta WHERE key = ? AND kind = 'credit'), 1), updated_at = ? WHERE subject = ? AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?) AND NOT EXISTS (SELECT 1 FROM spend_meta WHERE key = ? AND kind = 'free_shield')",
+  freeShieldRefundGuarded: "UPDATE account_free_shields SET used = used - 1, updated_at = ? WHERE account_id = ? AND used > 0 AND EXISTS (SELECT 1 FROM paid_spends WHERE key = ? AND resolver = ?) AND EXISTS (SELECT 1 FROM spend_meta WHERE key = ? AND kind = 'free_shield')",
   paidSpendPendingAccounts: "SELECT DISTINCT account_id FROM paid_spends WHERE status = 'pending' AND created_at < ? LIMIT 25",
   paidSpendPending: "SELECT key, created_at FROM paid_spends WHERE account_id = ? AND status = 'pending' AND created_at < ? LIMIT 10",
   deleteAccountSessions: 'DELETE FROM account_sessions WHERE account_id = ?',
   deleteAccountLinks: 'DELETE FROM magic_links WHERE account_id = ?',
+  deleteAccountSpendMeta: 'DELETE FROM spend_meta WHERE key IN (SELECT key FROM paid_spends WHERE account_id = ?)',
   deleteAccountSpends: 'DELETE FROM paid_spends WHERE account_id = ?',
+  deleteAccountFreeShields: 'DELETE FROM account_free_shields WHERE account_id = ?',
+  deleteAccountIntents: 'DELETE FROM checkout_intents WHERE account_id = ?',
+  // Tombstone instead of DELETE: dodo_orders keeps its FK to the row, and the
+  // email lookup hash (the only link to a person) is overwritten.
+  tombstoneAccount: "UPDATE accounts SET email_hmac = 'deleted:' || id, pepper_id = '' WHERE id = ?",
   deleteAccountRates: 'DELETE FROM auth_rate_limits WHERE key = ?',
-  deleteAccount: 'DELETE FROM accounts WHERE id = ?',
   accountHmac: 'SELECT email_hmac FROM accounts WHERE id = ?'
 } as const;
 
@@ -147,7 +166,8 @@ async function prune(env: AuthEnv, now: number): Promise<void> {
     env.DB.prepare(authSql.prune[0]).bind(now),
     env.DB.prepare(authSql.prune[1]).bind(now),
     env.DB.prepare(authSql.prune[2]).bind(now, AUTH_RATE_WINDOW_MS),
-    env.DB.prepare(authSql.prune[3]).bind(now, PAID_SPEND_TTL_MS)
+    env.DB.prepare(authSql.prune[3]).bind(now, PAID_SPEND_TTL_MS),
+    env.DB.prepare(authSql.prune[4]).bind()
   ]);
 }
 
@@ -193,6 +213,15 @@ export async function sendMagicLinkEmail(env: AuthEnv, to: string, link: string)
   } catch {
     return false;
   }
+}
+
+async function freeShieldsLeft(env: AuthEnv, accountId: string): Promise<number> {
+  const row = await env.DB.prepare(authSql.freeShieldsUsed).bind(accountId).first() as { used: number } | null;
+  return Math.max(0, freeShieldAllowance(env) - (row?.used ?? 0));
+}
+
+export async function accountBalances(env: AuthEnv, accountId: string): Promise<{ credits: number; free_shields: number }> {
+  return { credits: await creditBalance(env, accountId), free_shields: await freeShieldsLeft(env, accountId) };
 }
 
 async function creditBalance(env: AuthEnv, accountId: string): Promise<number> {
@@ -248,21 +277,55 @@ export type SpendResult = { ok: true; replay: boolean } | { ok: false; status: n
 // marker would later mint an unearned refund - or a decrement without a
 // marker. A replayed key inserts nothing and its foreign resolver cannot
 // satisfy the decrement guard, so replays never double-charge.
-export async function spendAccountCredit(env: AuthEnv, accountId: string, idemKey: string, now: number, cid?: string): Promise<SpendResult> {
-  const marker = `paid:${accountId}:${idemKey}`;
+export type SpendKind = 'credit' | 'free_shield';
+
+async function existingSpend(env: AuthEnv, marker: string): Promise<SpendResult | null> {
+  const existing = await env.DB.prepare(authSql.paidSpendStatus).bind(marker).first() as { status: string } | null;
+  if (!existing) return null;
+  if (existing.status === 'refunded') return { ok: false, status: 409, error: 'idempotency_consumed' };
+  return { ok: true, replay: true };
+}
+
+async function trySpend(env: AuthEnv, accountId: string, marker: string, kind: SpendKind, amount: number, now: number): Promise<boolean> {
   const resolver = crypto.randomUUID();
-  const [inserted] = await env.DB.batch([
-    env.DB.prepare(authSql.paidSpendInsert).bind(marker, accountId, now, resolver, accountId),
-    env.DB.prepare(authSql.creditSpendGuarded).bind(now, accountId, marker, resolver)
-  ]);
-  if ((inserted.meta?.changes || 0) === 0) {
-    const existing = await env.DB.prepare(authSql.paidSpendStatus).bind(marker).first() as { status: string } | null;
-    if (!existing) return { ok: false, status: 402, error: 'no_moves' };
-    if (existing.status === 'refunded') return { ok: false, status: 409, error: 'idempotency_consumed' };
-    return { ok: true, replay: true };
+  const statements = kind === 'free_shield'
+    ? [
+        env.DB.prepare(authSql.freeSpendInsert).bind(marker, accountId, now, resolver, accountId, freeShieldAllowance(env)),
+        env.DB.prepare(authSql.spendMetaInsert).bind(marker, 'free_shield', 1, marker, resolver),
+        env.DB.prepare(authSql.freeShieldUse).bind(accountId, now, marker, resolver)
+      ]
+    : [
+        env.DB.prepare(authSql.paidSpendInsert).bind(marker, accountId, now, resolver, accountId, amount),
+        env.DB.prepare(authSql.spendMetaInsert).bind(marker, 'credit', amount, marker, resolver),
+        env.DB.prepare(authSql.creditSpendGuarded).bind(amount, now, accountId, amount, marker, resolver)
+      ];
+  const [inserted] = await env.DB.batch(statements);
+  return (inserted.meta?.changes || 0) === 1;
+}
+
+// One move for an account. A shield uses a free shield first, then
+// `creditCost` credits; a belief always costs `creditCost` credits. Each
+// attempt is one atomic batch (marker + what it took + the decrement).
+export async function spendAccountMove(env: AuthEnv, accountId: string, idemKey: string, now: number, move: 'belief' | 'shield', creditCost: number, cid?: string): Promise<SpendResult & { kind?: SpendKind }> {
+  const marker = `paid:${accountId}:${idemKey}`;
+  const amount = Math.max(1, Math.floor(creditCost));
+  const replay = await existingSpend(env, marker);
+  if (replay) return replay;
+  if (move === 'shield' && await trySpend(env, accountId, marker, 'free_shield', 1, now)) {
+    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: 'spend_pending_free_shield' });
+    return { ok: true, replay: false, kind: 'free_shield' };
   }
-  logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: 'spend_pending' });
-  return { ok: true, replay: false };
+  if (await trySpend(env, accountId, marker, 'credit', amount, now)) {
+    logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: 'spend_pending' });
+    return { ok: true, replay: false, kind: 'credit' };
+  }
+  return (await existingSpend(env, marker)) || { ok: false, status: 402, error: move === 'belief' ? 'no_credits' : 'no_shields' };
+}
+
+// Kept for callers/tests of the one-credit path.
+export async function spendAccountCredit(env: AuthEnv, accountId: string, idemKey: string, now: number, cid?: string): Promise<SpendResult> {
+  const r = await spendAccountMove(env, accountId, idemKey, now, 'belief', 1, cid);
+  return r.ok ? { ok: true, replay: r.replay } : r.error === 'no_credits' ? { ok: false, status: 402, error: 'no_moves' } : r;
 }
 
 // Terminal transitions are conditional claims: only the pending->settled
@@ -278,11 +341,13 @@ export async function settleAccountSpend(env: AuthEnv, accountId: string, idemKe
 export async function refundAccountCredit(env: AuthEnv, accountId: string, idemKey: string, now: number, cid?: string): Promise<void> {
   const resolver = crypto.randomUUID();
   const key = `paid:${accountId}:${idemKey}`;
-  const [claim, refund] = await env.DB.batch([
+  const [claim, refund, free] = await env.DB.batch([
     env.DB.prepare(authSql.paidSpendClaim).bind('refunded', now, resolver, key),
-    env.DB.prepare(authSql.paidSpendRefundGuarded).bind(now, accountId, key, resolver)
+    env.DB.prepare(authSql.paidSpendRefundGuarded).bind(key, now, accountId, key, resolver, key),
+    env.DB.prepare(authSql.freeShieldRefundGuarded).bind(now, accountId, key, resolver, key)
   ]);
-  logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: (claim.meta?.changes || 0) === 1 ? ((refund.meta?.changes || 0) === 1 ? 'refund_credited' : 'refund_claimed_uncredited') : 'refund_claim_lost' });
+  const returned = (refund.meta?.changes || 0) + (free.meta?.changes || 0);
+  logEvent({ operation: 'credits', outcome: 'ok', correlationId: cid || crypto.randomUUID(), reason: (claim.meta?.changes || 0) === 1 ? (returned === 1 ? 'refund_credited' : 'refund_claimed_uncredited') : 'refund_claim_lost' });
 }
 
 // Replays nothing: the DO idempotency check is read-only. Pending rows are
@@ -385,14 +450,14 @@ export async function handleAuth(request: Request, env: AuthEnv, origin: string 
     }
     const link = await env.DB.prepare(authSql.linkAccount).bind(hash).first() as { account_id: string } | null;
     if (!link) return json({ error: 'link_invalid_or_expired' }, 401, origin);
-    return json({ ok: true, session, expiresIn: AUTH_SESSION_TTL_MS / 1000, credits: await creditBalance(env, link.account_id) }, 200, origin);
+    return json({ ok: true, session, expiresIn: AUTH_SESSION_TTL_MS / 1000, ...(await accountBalances(env, link.account_id)) }, 200, origin);
   }
 
   if (path === '/v1/auth/session' && request.method === 'GET') {
     const account = await requireAccount(request, env);
     if (!account) return json({ error: 'unauthorized' }, 401, origin);
     if (reconcile) await reconcile(account.accountId);
-    return json({ ok: true, credits: await creditBalance(env, account.accountId) }, 200, origin);
+    return json({ ok: true, ...(await accountBalances(env, account.accountId)) }, 200, origin);
   }
 
   if (path === '/v1/auth/session' && request.method === 'DELETE') {
@@ -406,36 +471,29 @@ export async function handleAuth(request: Request, env: AuthEnv, origin: string 
     return json({ ok: true }, 200, origin);
   }
 
-  if (path === '/v1/auth/sessions' && request.method === 'DELETE') {
-    const account = await requireAccount(request, env);
-    if (!account) return json({ error: 'unauthorized' }, 401, origin);
-    await env.DB.prepare(authSql.sessionRevokeAccount).bind(now, account.accountId).run();
-    return json({ ok: true }, 200, origin);
-  }
-
   if (path === '/v1/auth/account' && request.method === 'DELETE') {
     const account = await requireAccount(request, env);
     if (!account) return json({ error: 'unauthorized' }, 401, origin);
-    // Money guard: an account holding paid moves cannot self-delete; refund first.
+    if (reconcile) await reconcile(account.accountId);
+    // Unused credits are forfeited on deletion; the caller must say so
+    // explicitly. Refunds are handled by email, not by this endpoint.
     const balance = await creditBalance(env, account.accountId);
-    if (balance > 0) return json({ error: 'credits_remaining', credits: balance }, 409, origin);
+    const body = await readJson(request);
+    if (balance > 0 && body?.forfeit_credits !== true) return json({ error: 'credits_remaining', credits: balance }, 409, origin);
     const row = await env.DB.prepare(authSql.accountHmac).bind(account.accountId).first() as { email_hmac: string } | null;
-    // One transaction removes every auth row including a zero-balance
-    // credits row. A BEFORE DELETE trigger on accounts (0002.sql) aborts the
-    // whole batch when a credit grant raced the pre-check, so sessions,
-    // links, spends, rate rows and credits all remain intact on conflict.
-    try {
-      await env.DB.batch([
-        env.DB.prepare(authSql.deleteAccountSessions).bind(account.accountId),
-        env.DB.prepare(authSql.deleteAccountLinks).bind(account.accountId),
-        env.DB.prepare(authSql.deleteAccountSpends).bind(account.accountId),
-        env.DB.prepare(authSql.deleteAccountRates).bind(`email:${row?.email_hmac || ''}`),
-        env.DB.prepare(authSql.creditDeleteZero).bind(account.accountId),
-        env.DB.prepare(authSql.deleteAccount).bind(account.accountId)
-      ]);
-    } catch {
-      return json({ error: 'credits_remaining' }, 409, origin);
-    }
+    // One transaction. The accounts row is tombstoned, not deleted, so order
+    // rows keep a valid reference while nothing links them to an email.
+    await env.DB.batch([
+      env.DB.prepare(authSql.deleteAccountSessions).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountLinks).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountSpendMeta).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountSpends).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountRates).bind(`email:${row?.email_hmac || ''}`),
+      env.DB.prepare(authSql.deleteAccountFreeShields).bind(account.accountId),
+      env.DB.prepare(authSql.deleteAccountIntents).bind(account.accountId),
+      env.DB.prepare(authSql.creditDelete).bind(account.accountId, balance),
+      env.DB.prepare(authSql.tombstoneAccount).bind(account.accountId)
+    ]);
     return json({ ok: true }, 200, origin);
   }
 
@@ -443,7 +501,7 @@ export async function handleAuth(request: Request, env: AuthEnv, origin: string 
     const account = await requireAccount(request, env);
     if (!account) return json({ error: 'unauthorized' }, 401, origin);
     if (reconcile) await reconcile(account.accountId);
-    return json({ credits: await creditBalance(env, account.accountId) }, 200, origin);
+    return json(await accountBalances(env, account.accountId), 200, origin);
   }
 
   return json({ error: 'not_found' }, 404, origin);

@@ -67,20 +67,22 @@ test('account bearer persists in localStorage via account-token.js on every page
 
 test('sign-in copy never claims other devices are signed out',()=>{
  const html=read('account.html');
- assert.ok(html.includes('Each device stays signed in for 30 days until you sign out.'));
+ assert.ok(html.includes('Each device stays signed in for 30 days.'));
+ assert.ok(!html.includes('signOutAll')&&!read('account.js').includes('/v1/auth/sessions'),'sign-out-all must stay removed');
  assert.ok(!html.includes('signs out the old ones'));
  assert.ok(!read('callback.js').includes('Other devices were signed out'));
 });
 
-test('the hidden attribute always hides, so anonymous users never see Paid moves 0',()=>{
+test('signed-out visitors see dashes, not a zero balance, and are sent to sign in',()=>{
  assert.ok(read('styles.css').includes('[hidden]{display:none!important}'));
- assert.ok(read('app.js').includes('row.hidden=true'));
+ const app=read('app.js');
+ assert.ok(app.includes("$('#creditsLeft').textContent=signed?state.credits:'—'"));
+ assert.ok(app.includes('if(!accountBearer)return needAccount()'));
+ assert.ok(!app.includes('/v1/session'),'anonymous sessions are gone');
 });
 
-test('paid moves cannot double-submit while in flight',()=>{
+test('moves cannot double-submit while in flight',()=>{
  const app=read('app.js');
- assert.ok(app.includes('let paidBusy=false;'),'paidMove re-entry guard missing');
- assert.ok(app.includes('if(paidBusy)return false'),'paidMove re-entry guard missing');
- assert.ok(app.includes('finally{paidBusy=false}'),'paidMove guard never resets');
- assert.ok(app.includes('sb.disabled=true'),'paid submit button is not disabled in flight');
+ assert.ok(app.includes('let moveBusy=false;')&&app.includes('if(moveBusy)return;')&&app.includes('finally{moveBusy=false}'),'shield re-entry guard missing');
+ assert.ok(app.includes('if(composerBusy)return;')&&app.includes('button.disabled=true'),'belief submit is not guarded in flight');
 });

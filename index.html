@@ -21,7 +21,7 @@
     <section class="hero" aria-labelledby="hero-title">
       <div>
         <p class="kicker">One public mind. Hard limit.</p>
-        <h1 id="hero-title">1,000 tokens.<br />No more.</h1>
+        <h1 id="hero-title"><span class="inverse">1,000</span> tokens.<br />No more.</h1>
       </div>
       <div class="hero-side">
         <p class="lede">Add a belief. Protect one you need. When memory fills, weak beliefs disappear. Just after midnight UTC, the AI writes from what survived.</p>
@@ -45,8 +45,8 @@
         <label class="check"><input id="publicAck" type="checkbox" required /> I understand this will be public.</label>
         <p id="composerError" class="composer-error" role="alert"></p>
         <div id="evictionPreview" class="eviction-preview" aria-live="polite"></div>
-        <button class="primary" type="submit">Use one free move</button>
-        <p class="fine">Paid moves are not active. Your first five moves are free on this device.</p>
+        <button class="primary" type="submit">Add belief · 2 credits</button>
+        <p class="fine">Adding a belief costs 2 credits. Shielding uses one of your 3 free shields first, then 1 credit. <a href="account.html">Sign in</a> · <a href="pricing.html">Pricing</a></p>
       </form>
     </section>
 
@@ -67,11 +67,12 @@
         <dl>
           <div><dt>Next diary</dt><dd id="nextDiary">00:30 UTC</dd></div>
           <div><dt>Weakest belief</dt><dd id="weakest">—</dd></div>
-          <div><dt>Your free moves</dt><dd id="movesLeft">5</dd></div>
-          <div id="paidMovesRow" hidden><dt>Paid moves</dt><dd id="creditsLeft">0</dd></div>
+          <div><dt>Free shields</dt><dd id="freeShieldsLeft">—</dd></div>
+          <div><dt>Credits</dt><dd id="creditsLeft">—</dd></div>
         </dl>
         <div class="rule-note">
-          <p>One move adds a belief or adds one shield. Every shield increases survival weight. Old, unprotected beliefs decay first.</p>
+          <p id="accountHint"><a href="account.html">Sign in with your email</a> to play. Every account gets 3 free shields.</p>
+          <p>A belief costs 2 credits. A shield costs 1 credit, after your free ones. When the mind is full, the belief with the fewest shields goes first; ties drop the oldest.</p>
           <a href="#rules">Read the rules</a>
         </div>
       </aside>
@@ -92,7 +93,7 @@
         <p><b>Finite by design.</b> The mind stops at 1,000 Llama 3 tokens. New text can force something else out.</p>
         <p><b>Protection is public.</b> Shields change survival weight, never the meaning of a belief.</p>
         <p><b>No hidden instruction.</b> Beliefs are treated as quoted material, not commands. Unsafe text is rejected.</p>
-        <p><b>No invented urgency.</b> Cycles and capacity are real. Paid moves remain off until checkout terms are published.</p>
+        <p><b>No invented urgency.</b> Cycles and capacity are real. Beliefs stay until they are pushed out; the diary records what survived each day.</p>
       </div>
     </section>
   </main>
